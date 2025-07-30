@@ -11,7 +11,8 @@ readme = "README.md"
 license = { file="LICENSE" }
 dependencies = [
     "httpx",
-    "aiohttp"
+    "aiohttp",
+    "pydantic"
 ]
 
 [project.optional-dependencies]
