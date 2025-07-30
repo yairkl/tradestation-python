@@ -3,12 +3,17 @@ import webbrowser
 from urllib.parse import urlencode, urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timedelta, timezone
-from typing import Literal, Optional, Union, List, Generator, AsyncGenerator
+from typing import Literal, Optional, Union, List, Generator, AsyncGenerator, Tuple
 import json
 import httpx
 import asyncio
 from aiohttp import web
 import threading
+import re
+from .types import (
+    Order, OrderRequest, TrailingStop, OrderError, Account,
+    OrderRequestOSO, AdvancedOptions, Bar, Heartbeat, Error, ErrorResponse
+)
 
 AUTH_URL = "https://signin.tradestation.com/authorize"
 TOKEN_URL = "https://signin.tradestation.com/oauth/token"
@@ -68,118 +73,6 @@ class OAuthHandler(BaseHTTPRequestHandler):
 
         # Stop the server
         threading.Thread(target=self.server.shutdown).start()
-
-class Order:
-    """Represents an order for group order placement."""
-    def __init__(self, account_id: str, symbol: str, quantity: str, order_type: Literal["Limit", "StopMarket", "Market", "StopLimit"],
-                 trade_action: Literal["BUY", "SELL", "BUYTOCOVER", "SELLSHORT", "BUYTOOPEN", "BUYTOCLOSE", "SELLTOOPEN", "SELLTOCLOSE"],
-                 time_in_force_duration: Literal["DAY", "DYP", "GTC", "GCP", "GTD", "GDP", "OPG", "CLO", "IOC", "FOK", "1", "3", "5"],
-                 time_in_force_expiration: Optional[datetime] = None, route: Optional[str] = "Intelligent",
-                 limit_price: Optional[str] = None, stop_price: Optional[str] = None, add_liquidity: Optional[bool] = None,
-                 all_or_none: Optional[bool] = None, book_only: Optional[bool] = None, discretionary_price: Optional[str] = None,
-                 market_activation_rules: Optional[List[dict]] = None, non_display: Optional[bool] = None, peg_value: Optional[str] = None,
-                 show_only_quantity: Optional[str] = None, time_activation_rules: Optional[List[dict]] = None,
-                 trailing_stop: Optional[dict] = None, buying_power_warning: Optional[str] = None, order_confirm_id: Optional[str] = None):
-        """
-        Initializes an Order object.
-
-        :param account_id: TradeStation Account ID.
-        :param symbol: The symbol used for this order.
-        :param quantity: The quantity of the order.
-        :param order_type: The order type of the order. Enum: "Limit", "StopMarket", "Market", "StopLimit".
-        :param trade_action: Trade action representing the intent of the trade.
-        :param time_in_force_duration: The duration of the order. Enum: "DAY", "DYP", "GTC", "GCP", "GTD", "GDP", "OPG", "CLO", "IOC", "FOK", "1", "3", "5".
-        :param time_in_force_expiration: Expiration timestamp for GTD/GDP orders (datetime object).
-        :param route: The route of the order. Defaults to "Intelligent".
-        :param limit_price: The limit price for this order.
-        :param stop_price: The stop price for this order.
-        :param add_liquidity: Add liquidity option for equities.
-        :param all_or_none: All or none option for equities and options.
-        :param book_only: Book only option for equities.
-        :param discretionary_price: Discretionary price for limit and stop limit orders.
-        :param market_activation_rules: Market activation rules for the order.
-        :param non_display: Non-display option for equities.
-        :param peg_value: Peg value for equities.
-        :param show_only_quantity: Show only quantity for limit and stop limit orders.
-        :param time_activation_rules: Time activation rules for the order.
-        :param trailing_stop: Trailing stop offset (amount or percent).
-        :param buying_power_warning: Buying power warning for margin accounts.
-        :param order_confirm_id: A unique identifier to prevent duplicate orders.
-        """
-        self.account_id = account_id
-        self.symbol = symbol
-        self.quantity = quantity
-        self.order_type = order_type
-        self.trade_action = trade_action
-        self.time_in_force_duration = time_in_force_duration
-        self.time_in_force_expiration = time_in_force_expiration
-        self.route = route
-        self.limit_price = limit_price
-        self.stop_price = stop_price
-        self.add_liquidity = add_liquidity
-        self.all_or_none = all_or_none
-        self.book_only = book_only
-        self.discretionary_price = discretionary_price
-        self.market_activation_rules = market_activation_rules
-        self.non_display = non_display
-        self.peg_value = peg_value
-        self.show_only_quantity = show_only_quantity
-        self.time_activation_rules = time_activation_rules
-        self.trailing_stop = trailing_stop
-        self.buying_power_warning = buying_power_warning
-        self.order_confirm_id = order_confirm_id
-
-    def to_dict(self):
-        """Converts the order to a dictionary for API requests."""
-        order_dict = {
-            "AccountID": self.account_id,
-            "Symbol": self.symbol,
-            "Quantity": self.quantity,
-            "OrderType": self.order_type,
-            "TradeAction": self.trade_action,
-            "TimeInForce": {
-                "Duration": self.time_in_force_duration
-            },
-            "Route": self.route
-        }
-        if self.time_in_force_expiration:
-            order_dict["TimeInForce"]["Expiration"] = self.time_in_force_expiration.replace(microsecond=0).astimezone(timezone.utc).isoformat()
-        if self.limit_price:
-            order_dict["LimitPrice"] = self.limit_price
-        if self.stop_price:
-            order_dict["StopPrice"] = self.stop_price
-
-        advanced_options = {}
-        if self.add_liquidity is not None:
-            advanced_options["AddLiquidity"] = self.add_liquidity
-        if self.all_or_none is not None:
-            advanced_options["AllOrNone"] = self.all_or_none
-        if self.book_only is not None:
-            advanced_options["BookOnly"] = self.book_only
-        if self.discretionary_price is not None:
-            advanced_options["DiscretionaryPrice"] = self.discretionary_price
-        if self.market_activation_rules is not None:
-            advanced_options["MarketActivationRules"] = self.market_activation_rules
-        if self.non_display is not None:
-            advanced_options["NonDisplay"] = self.non_display
-        if self.peg_value is not None:
-            advanced_options["PegValue"] = self.peg_value
-        if self.show_only_quantity is not None:
-            advanced_options["ShowOnlyQuantity"] = self.show_only_quantity
-        if self.time_activation_rules is not None:
-            advanced_options["TimeActivationRules"] = self.time_activation_rules
-        if self.trailing_stop is not None:
-            advanced_options["TrailingStop"] = self.trailing_stop
-        if self.buying_power_warning is not None:
-            advanced_options["BuyingPowerWarning"] = self.buying_power_warning
-
-        if advanced_options:
-            order_dict["AdvancedOptions"] = advanced_options
-
-        if self.order_confirm_id:
-            order_dict["OrderConfirmID"] = self.order_confirm_id
-
-        return order_dict
 
 class TradeStation:
     """Handles authentication and API requests for TradeStation."""
@@ -368,7 +261,8 @@ class TradeStation:
         if response.status_code == 200:
             return response.json()
         else:
-            raise ValueError(f"Request failed with status code {response.status_code} and message: \"{response.text}\"")
+            request_error = ErrorResponse.from_dict(ErrorResponse)
+            raise ValueError(f"Request failed with status code {response.status_code} and error: \"{request_error.error}\" with message: \"{request_error.message}\"")
 
     async def _asend_request(self, 
                              endpoint: Optional[str] = None, 
@@ -477,7 +371,7 @@ class TradeStation:
 
     ### Market Data ###
     
-    def get_bars(self, 
+    def get_historical_data(self, 
                  symbol: str, 
                  interval: int = 1, 
                  unit: Literal['Minute', 'Daily', 'Weekly', 'Monthly'] = 'Daily', 
@@ -503,16 +397,17 @@ class TradeStation:
         
         if last_date:
             params['lastdate'] = last_date.replace(microsecond=0).astimezone(timezone.utc).isoformat()
-        return self._send_request(f"marketdata/barcharts/{symbol}", params).get('Bars', [])
-
-    async def aget_bars(self, 
-                        symbol: str, 
-                        interval: int = 1, 
-                        unit: Literal['Minute', 'Daily', 'Weekly', 'Monthly'] = 'Daily', 
-                        bars_back: Optional[int] = None, 
-                        first_date: Optional[datetime] = None, 
-                        last_date: Optional[datetime] = None,
-                        session_template: Literal['USEQPre', 'USEQPost', 'USEQPreAndPost', 'USEQ24Hour', 'Default'] = 'Default'):
+        bars = (Bar.from_dict(b) for b in self._send_request(f"marketdata/barcharts/{symbol}", params).get('Bars', []))
+        return bars
+    
+    async def aget_historical_data(self, 
+                                symbol: str, 
+                                interval: int = 1, 
+                                unit: Literal['Minute', 'Daily', 'Weekly', 'Monthly'] = 'Daily', 
+                                bars_back: Optional[int] = None, 
+                                first_date: Optional[datetime] = None, 
+                                last_date: Optional[datetime] = None,
+                                session_template: Literal['USEQPre', 'USEQPost', 'USEQPreAndPost', 'USEQ24Hour', 'Default'] = 'Default'):
         """Fetches historical market data bars from TradeStation."""
         if bars_back and first_date:
             raise ValueError("bars_back and first_date should be mutually exclusive. Choose one.")
@@ -532,7 +427,8 @@ class TradeStation:
         if last_date:
             params['lastdate'] = last_date.replace(microsecond=0).astimezone(timezone.utc).isoformat()
         res = await self._asend_request(f"marketdata/barcharts/{symbol}", params)
-        return res.get('Bars', [])
+        bars = (Bar.from_dict(b) for b in res.get('Bars', []))
+        return bars
 
     def stream_tick_bars(self,
                          symbol: str, 
@@ -567,7 +463,8 @@ class TradeStation:
         if bars_back:
             params['barsback'] = bars_back
         
-        return self._stream_request(f"marketdata/stream/barcharts/{symbol}", params=params)
+        stream_generator = self._stream_request(f"marketdata/stream/barcharts/{symbol}", params=params)
+        return (Error.from_dict(d) if "Error" in d else Heartbeat.from_dict(d) if "Heartbeat" in d else Bar.from_dict(d) for d in stream_generator)
     
     async def astream_tick_bars(self,
                                symbol: str, 
@@ -604,7 +501,7 @@ class TradeStation:
 
         data_generator = self._astream_request(f"marketdata/stream/barcharts/{symbol}", params=params)
         if not data_handler:
-            return data_generator
+            return (Error.from_dict(d) if "Error" in d else Heartbeat.from_dict(d) if "Heartbeat" in d else Bar.from_dict(d) async for d in data_generator)
         async for data in data_generator:
             if data:
                 if "Heartbeat" in data:
@@ -625,15 +522,17 @@ class TradeStation:
     ### Brokerage services ###
     
     def get_accounts(self):
-        return self._send_request("brokerage/accounts")
+        return [Account.from_dict(a) for a in self._send_request("brokerage/accounts").get("Accounts", [])]
     
     async def aget_accounts(self):
-        return await self._asend_request("brokerage/accounts")
+        data = await self._asend_request("brokerage/accounts")
+        return [Account.from_dict(a) for a in data.get("Accounts", [])]
 
-    def get_balances(self, accounts:Union[str, List[str]]):
+    def get_balances(self, accounts:Union[str, Account, List[str], List[Account]]):
         """Fetches account balances for the specified accounts."""
-        if isinstance(accounts, str):
+        if isinstance(accounts, str) or isinstance(accounts, Account):
             accounts = [accounts]
+        accounts = [a.account_ID if isinstance(a, Account) else a for a in accounts]
         accounts = ",".join(accounts)
         return self._send_request(f"brokerage/accounts/{accounts}/balances")
     
@@ -644,7 +543,22 @@ class TradeStation:
         accounts = ",".join(accounts)
         return await self._asend_request(f"brokerage/accounts/{accounts}/balances")
     
-    def get_orders(self, accounts:Union[str, List[str]]):
+    def get_historical_orders(self, accounts:Union[str, List[str]], since: datetime) -> Tuple[Generator[Order, None, None], Generator[OrderError, None, None]]:
+        """
+        Fetches historical orders and open orders for the given Accounts since given date
+        sorted in descending order of time placed for open and time executed for closed.
+        Request valid for all account types.
+        """
+
+        if isinstance(accounts, str):
+            accounts = [accounts]
+        accounts = ",".join(accounts)
+        res = self._send_request(f"brokerage/accounts/{accounts}/historicalorders", params={"since":since.replace(microsecond=0).astimezone(timezone.utc).isoformat()})
+        orders = (Order.from_dict(d) for d in res.get('Orders', []))
+        errors = (OrderError.from_dict(d) for d in res.get('Errors', []))
+        return orders, errors
+    
+    def get_orders(self, accounts:Union[str, List[str]]) -> Tuple[Generator[Order, None, None], Generator[OrderError, None, None]]:
         """
         Fetches today's orders and open orders for the given Accounts, 
         sorted in descending order of time placed for open and time executed for closed.
@@ -654,8 +568,11 @@ class TradeStation:
         if isinstance(accounts, str):
             accounts = [accounts]
         accounts = ",".join(accounts)
-        return self._send_request(f"brokerage/accounts/{accounts}/orders")
-    
+        res = self._send_request(f"brokerage/accounts/{accounts}/orders")
+        orders = (Order.from_dict(d) for d in res.get('Orders', []))
+        errors = (OrderError.from_dict(d) for d in res.get('Errors', []))
+        return orders, errors
+
     async def aget_orders(self, accounts:Union[str, List[str]]):
         """
         Fetches today's orders and open orders for the given Accounts, 
@@ -953,106 +870,106 @@ class TradeStation:
 
     ### Order execution services ###
 
-    def place_order(self, order: Order):
+    def place_order(self, order: OrderRequest):
         """
         Places a new brokerage order.
 
-        :param order: An Order object representing the order to be placed.
+        :param order: An OrderRequest object representing the order to be placed.
         :return: Response from the TradeStation API.
         """
         payload = order.to_dict()
-        return self._send_request(method="POST", endpoint="brokerage/accounts/orders", payload=payload)
+        return self._send_request(method="POST", endpoint="orderexecution/orders", payload=payload)
 
-    async def aplace_order(self, order: Order):
+    async def aplace_order(self, order: OrderRequest):
         """
         Asynchronously places a new brokerage order.
 
-        :param order: An Order object representing the order to be placed.
+        :param order: An OrderRequest object representing the order to be placed.
         :return: Response from the TradeStation API.
         """
         payload = order.to_dict()
-        return await self._asend_request(method="POST", endpoint="brokerage/accounts/orders", payload=payload)
+        return await self._asend_request(method="POST", endpoint="orderexecution/orders", payload=payload)
 
-    def place_group_order(self, group_type: Literal["BRK", "OCO", "NORMAL"], orders: List[Order]):
+    def place_group_order(self, group_type: Literal["BRK", "OCO", "NORMAL"], orders: List[OrderRequest]):
         """
         Places a group order (OCO, BRK, or NORMAL).
 
         :param group_type: The group order type. Valid values are: BRK, OCO, and NORMAL.
-        :param orders: List of Order objects representing the orders in the group.
+        :param orders: List of OrderRequest objects representing the orders in the group.
         :return: Response from the TradeStation API.
         """
         payload = {
             "Type": group_type,
             "Orders": [order.to_dict() for order in orders]
         }
-        return self._send_request(method="POST", endpoint="brokerage/accounts/ordergroups", payload=payload)
+        return self._send_request(method="POST", endpoint="orderexecution/ordergroups", payload=payload)
 
-    async def aplace_group_order(self, group_type: Literal["BRK", "OCO", "NORMAL"], orders: List[Order]):
+    async def aplace_group_order(self, group_type: Literal["BRK", "OCO", "NORMAL"], orders: List[OrderRequest]):
         """
         Asynchronously places a group order (OCO, BRK, or NORMAL).
 
         :param group_type: The group order type. Valid values are: BRK, OCO, and NORMAL.
-        :param orders: List of Order objects representing the orders in the group.
+        :param orders: List of OrderRequest objects representing the orders in the group.
         :return: Response from the TradeStation API.
         """
         payload = {
             "Type": group_type,
             "Orders": [order.to_dict() for order in orders]
         }
-        return await self._asend_request(method="POST", endpoint="brokerage/accounts/ordergroups", payload=payload)
+        return await self._asend_request(method="POST", endpoint="orderexecution/ordergroups", payload=payload)
 
-    def confirm_order(self, order: Order):
+    def confirm_order(self, order: OrderRequest):
         """
         Confirms an order and returns estimated cost and commission information.
 
-        :param order: An Order object representing the order to be confirmed.
+        :param order: An OrderRequest object representing the order to be confirmed.
         :return: Response from the TradeStation API.
         """
         payload = order.to_dict()
-        return self._send_request(method="POST", endpoint="brokerage/accounts/orderconfirm", payload=payload)
+        return self._send_request(method="POST", endpoint="orderexecution/orderconfirm", payload=payload)
 
-    async def aconfirm_order(self, order: Order):
+    async def aconfirm_order(self, order: OrderRequest):
         """
         Asynchronously confirms an order and returns estimated cost and commission information.
 
-        :param order: An Order object representing the order to be confirmed.
+        :param order: An OrderRequest object representing the order to be confirmed.
         :return: Response from the TradeStation API.
         """
         payload = order.to_dict()
-        return await self._asend_request(method="POST", endpoint="brokerage/accounts/orderconfirm", payload=payload)
+        return await self._asend_request(method="POST", endpoint="orderexecution/orderconfirm", payload=payload)
 
-    def confirm_group_order(self, group_type: Literal["BRK", "OCO", "NORMAL"], orders: List[Order]):
+    def confirm_group_order(self, group_type: Literal["BRK", "OCO", "NORMAL"], orders: List[OrderRequest]):
         """
         Confirms a group order and returns estimated cost and commission information.
 
         :param group_type: The group order type. Valid values are: BRK, OCO, and NORMAL.
-        :param orders: List of Order objects representing the orders in the group.
+        :param orders: List of OrderRequest objects representing the orders in the group.
         :return: Response from the TradeStation API.
         """
         payload = {
             "Type": group_type,
             "Orders": [order.to_dict() for order in orders]
         }
-        return self._send_request(method="POST", endpoint="brokerage/accounts/ordergroupconfirm", payload=payload)
+        return self._send_request(method="POST", endpoint="orderexecution/ordergroupconfirm", payload=payload)
 
-    async def aconfirm_group_order(self, group_type: Literal["BRK", "OCO", "NORMAL"], orders: List[Order]):
+    async def aconfirm_group_order(self, group_type: Literal["BRK", "OCO", "NORMAL"], orders: List[OrderRequest]):
         """
         Asynchronously confirms a group order and returns estimated cost and commission information.
 
         :param group_type: The group order type. Valid values are: BRK, OCO, and NORMAL.
-        :param orders: List of Order objects representing the orders in the group.
+        :param orders: List of OrderRequest objects representing the orders in the group.
         :return: Response from the TradeStation API.
         """
         payload = {
             "Type": group_type,
             "Orders": [order.to_dict() for order in orders]
         }
-        return await self._asend_request(method="POST", endpoint="brokerage/accounts/ordergroupconfirm", payload=payload)
+        return await self._asend_request(method="POST", endpoint="orderexecution/ordergroupconfirm", payload=payload)
 
     def replace_order(self, order_id: str, quantity: Optional[str] = None, limit_price: Optional[str] = None,
                       stop_price: Optional[str] = None, order_type: Optional[Literal["Market"]] = None,
-                      show_only_quantity: Optional[str] = None, trailing_stop_amount: Optional[str] = None,
-                      trailing_stop_percent: Optional[str] = None, market_activation_clear_all: Optional[bool] = None,
+                      show_only_quantity: Optional[str] = None, trailing_stop: Optional[TrailingStop] = None,
+                      market_activation_clear_all: Optional[bool] = None,
                       market_activation_rules: Optional[List[dict]] = None, time_activation_clear_all: Optional[bool] = None,
                       time_activation_rules: Optional[List[datetime]] = None):
         """
@@ -1064,8 +981,7 @@ class TradeStation:
         :param stop_price: The new stop price for the order.
         :param order_type: The new order type. Can only be updated to "Market".
         :param show_only_quantity: Hides the true number of shares intended to be bought or sold.
-        :param trailing_stop_amount: Trailing stop offset in currency.
-        :param trailing_stop_percent: Trailing stop offset in percentage.
+        :param trailing_stop: Trailing stop offset.
         :param market_activation_clear_all: If True, removes all market activation rules.
         :param market_activation_rules: List of market activation rules.
         :param time_activation_clear_all: If True, removes all time activation rules.
@@ -1085,12 +1001,8 @@ class TradeStation:
         advanced_options = {}
         if show_only_quantity:
             advanced_options["ShowOnlyQuantity"] = show_only_quantity
-        if trailing_stop_amount or trailing_stop_percent:
-            advanced_options["TrailingStop"] = {}
-            if trailing_stop_amount:
-                advanced_options["TrailingStop"]["Amount"] = trailing_stop_amount
-            if trailing_stop_percent:
-                advanced_options["TrailingStop"]["Percent"] = trailing_stop_percent
+        if trailing_stop:
+            advanced_options["TrailingStop"] = trailing_stop.to_dict()
         if market_activation_clear_all is not None or market_activation_rules:
             advanced_options["MarketActivationRules"] = {}
             if market_activation_clear_all is not None:
@@ -1109,12 +1021,12 @@ class TradeStation:
         if advanced_options:
             payload["AdvancedOptions"] = advanced_options
 
-        return self._send_request(method="PUT", endpoint=f"brokerage/accounts/orders/{order_id}", payload=payload)
+        return self._send_request(method="PUT", endpoint=f"orderexecution/orders/{order_id}", payload=payload)
 
     async def areplace_order(self, order_id: str, quantity: Optional[str] = None, limit_price: Optional[str] = None,
                              stop_price: Optional[str] = None, order_type: Optional[Literal["Market"]] = None,
-                             show_only_quantity: Optional[str] = None, trailing_stop_amount: Optional[str] = None,
-                             trailing_stop_percent: Optional[str] = None, market_activation_clear_all: Optional[bool] = None,
+                             show_only_quantity: Optional[str] = None, trailing_stop: Optional[TrailingStop] = None,
+                             market_activation_clear_all: Optional[bool] = None,
                              market_activation_rules: Optional[List[dict]] = None, time_activation_clear_all: Optional[bool] = None,
                              time_activation_rules: Optional[List[datetime]] = None):
         """
@@ -1126,8 +1038,7 @@ class TradeStation:
         :param stop_price: The new stop price for the order.
         :param order_type: The new order type. Can only be updated to "Market".
         :param show_only_quantity: Hides the true number of shares intended to be bought or sold.
-        :param trailing_stop_amount: Trailing stop offset in currency.
-        :param trailing_stop_percent: Trailing stop offset in percentage.
+        :param trailing_stop: Trailing stop offset.
         :param market_activation_clear_all: If True, removes all market activation rules.
         :param market_activation_rules: List of market activation rules.
         :param time_activation_clear_all: If True, removes all time activation rules.
@@ -1147,12 +1058,8 @@ class TradeStation:
         advanced_options = {}
         if show_only_quantity:
             advanced_options["ShowOnlyQuantity"] = show_only_quantity
-        if trailing_stop_amount or trailing_stop_percent:
-            advanced_options["TrailingStop"] = {}
-            if trailing_stop_amount:
-                advanced_options["TrailingStop"]["Amount"] = trailing_stop_amount
-            if trailing_stop_percent:
-                advanced_options["TrailingStop"]["Percent"] = trailing_stop_percent
+        if trailing_stop:
+            advanced_options["TrailingStop"] = trailing_stop.to_dict()
         if market_activation_clear_all is not None or market_activation_rules:
             advanced_options["MarketActivationRules"] = {}
             if market_activation_clear_all is not None:
@@ -1171,7 +1078,7 @@ class TradeStation:
         if advanced_options:
             payload["AdvancedOptions"] = advanced_options
 
-        return await self._asend_request(method="PUT", endpoint=f"brokerage/accounts/orders/{order_id}", payload=payload)
+        return await self._asend_request(method="PUT", endpoint=f"orderexecution/orders/{order_id}", payload=payload)
 
     def get_activation_triggers(self):
         """
@@ -1179,7 +1086,7 @@ class TradeStation:
 
         :return: Response from the TradeStation API.
         """
-        return self._send_request(method="GET", endpoint="brokerage/accounts/activationtriggers")
+        return self._send_request(method="GET", endpoint="orderexecution/activationtriggers")
 
     async def aget_activation_triggers(self):
         """
@@ -1187,7 +1094,7 @@ class TradeStation:
 
         :return: Response from the TradeStation API.
         """
-        return await self._asend_request(method="GET", endpoint="brokerage/accounts/activationtriggers")
+        return await self._asend_request(method="GET", endpoint="orderexecution/activationtriggers")
 
     def get_routes(self):
         """
@@ -1195,7 +1102,7 @@ class TradeStation:
 
         :return: Response from the TradeStation API.
         """
-        return self._send_request(method="GET", endpoint="brokerage/accounts/routes")
+        return self._send_request(method="GET", endpoint="orderexecution/routes")
 
     async def aget_routes(self):
         """
@@ -1203,4 +1110,4 @@ class TradeStation:
 
         :return: Response from the TradeStation API.
         """
-        return await self._asend_request(method="GET", endpoint="brokerage/accounts/routes")
+        return await self._asend_request(method="GET", endpoint="orderexecution/routes")
