@@ -1,3 +1,6 @@
+
+import json
+from typing import AsyncGenerator
 import os
 import webbrowser
 from urllib.parse import urlencode, urlparse, parse_qs
@@ -10,15 +13,12 @@ import asyncio
 from aiohttp import web
 import threading
 import re
-from .types import (
-    Order, OrderRequest, TrailingStop, OrderError, Account,
-    OrderRequestOSO, AdvancedOptions, Bar, Heartbeat, Error, ErrorResponse
-)
+from models import *
 
 AUTH_URL = "https://signin.tradestation.com/authorize"
 TOKEN_URL = "https://signin.tradestation.com/oauth/token"
-LIVE_API_URL = "https://api.tradestation.com/v3"
-DEMO_API_URL = "https://sim-api.tradestation.com/v3"
+LIVE_API_URL = "https://api.tradestation.com"
+DEMO_API_URL = "https://sim-api.tradestation.com"
 auth_success_html = """
 <!DOCTYPE html>
 <html lang="en">
@@ -74,30 +74,25 @@ class OAuthHandler(BaseHTTPRequestHandler):
         # Stop the server
         threading.Thread(target=self.server.shutdown).start()
 
-class TradeStation:
-    """Handles authentication and API requests for TradeStation."""
+class TradeStationClient:
+    """Client for interacting with the TradeStation API."""
     ### Initiation and Authentication handling ###
-    def __init__(self, client_id: Optional[str] = None, client_secret: Optional[str] = None, port: int = 8080,
+    def __init__(self, client_id: Optional[str] = None, client_secret: Optional[str] = None, port: int = 31022,
                  is_demo: bool = True, refresh_token_margin:float=60, async_mode: bool = False):
-        self.client_id = client_id if client_id else os.getenv('CLIENT_ID')
-        self.client_secret = client_secret if client_secret else os.getenv('CLIENT_SECRET')
+        self.client_id = client_id if client_id else os.getenv('TRADESTATION_CLIENT_ID')
+        self.client_secret = client_secret if client_secret else os.getenv('TRADESTATION_CLIENT_SECRET')
         assert self.client_id, "Either client_id or CLIENT_ID environment variable must be provided."
         assert self.client_secret, "Either client_secret or CLIENT_SECRET environment variable must be provided."
         self.port=port
-        self.api_url = DEMO_API_URL if is_demo else LIVE_API_URL
+        self.base_url = DEMO_API_URL if is_demo else LIVE_API_URL
         self.redirect_uri = f'http://localhost:{self.port}/'
         self.access_token = None
         self.refresh_token = None
         self.expires_in = None
         self.refresh_margin = timedelta(seconds=refresh_token_margin)
-        if async_mode:
-            self.auth_code_event = asyncio.Event()
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(self._async_authenticate())
-        else:
-            self._authenticate()
-            
-        # self.refresh_task = loop.create_task(self._refresh_token_loop())
+        self._authenticate()
+        self.client = httpx.AsyncClient(headers={'Authorization': f'Bearer {self.access_token}'})
+
 
     def _generate_auth_url(self) -> str:
         """Generates the authentication URL for TradeStation OAuth."""
@@ -118,25 +113,14 @@ class TradeStation:
         server.auth_instance = self
         threading.Thread(target=server.serve_forever, daemon=True).start()
 
-    async def _start_async_server(self):
-        app = web.Application()
-        app.router.add_get("/", self._handle_auth_redirect)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        self.server = web.TCPSite(runner, "localhost", self.port)
-        await self.server.start()
-
-    async def _stop_async_server(self):
-        await self.server.stop()
-
-    async def _handle_auth_redirect(self, request):
-        query = request.rel_url.query
-        code = query.get("code")
-        if code:
-            await self._async_exchange_code_for_token(code)
-            self.auth_code_event.set()
-            return web.Response(body=auth_success_html, content_type='text/html')
-        return web.Response(text="No authorization code found.")
+    def _authenticate(self):
+        """Handles the authentication flow."""
+        self._start_server()
+        webbrowser.open(self._generate_auth_url())
+        # print(self._generate_auth_url())
+        
+        while self.access_token is None:
+            pass
 
     def _exchange_code_for_token(self, code: str):
         """Exchanges authorization code for an access token."""
@@ -158,956 +142,843 @@ class TradeStation:
             else:
                 raise ValueError(f"Error obtaining token: {response.text}")
 
-    async def _async_exchange_code_for_token(self, code:str):
-        """Exchanges the authorization code for an access token."""
-        data = {
-            'grant_type': 'authorization_code',
-            'code': code,
-            'redirect_uri': self.redirect_uri,
-            'client_id': self.client_id,
-            'client_secret': self.client_secret
-        }
-        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-        async with httpx.AsyncClient() as client:
-            response = await client.post(TOKEN_URL, data=data, headers=headers)
-            if response.status_code == 200:
-                body = response.json()
-                self.access_token = body['access_token']
-                self.refresh_token = body['refresh_token']
-                self.token_expiry = datetime.now() + timedelta(seconds=body.get('expires_in', 1200))
+
+    async def suggestsymbols(self, text: str, dollar_top: Optional[int] = None, dollar_filter: Optional[str] = None) -> Union[Error, SymbolSuggestDefinition]:
+        """Suggest Symbols\n
+
+Args:
+    dollar_top: The top number of results to return.
+    dollar_filter: An OData filter to apply to the results. Supports the `eq` and `neq` filter opeators. E.g. `AAP?$filter=Category%20neq%20%27Stock%27`.\nValid values are: `Category` (`Stock`, `Index`, `Future`, `Forex`), `Country` (E.g. `United States`, `GB`) `Currency` (E.g. `USD`, `AUD`),\nand `Exchange` (E.g. `NYSE`).
+    text: Symbol text for suggestion. Partial input of a symbol name, company name, or description."""
+        url = f"{self.base_url}/v2/data/symbols/suggest/{text}"
+        response = await self.client.get(url, params={k: v for k, v in {'$top': dollar_top, '$filter': dollar_filter}.items() if v is not None})
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 500, 502, 504}:
+            if response.status_code == 200: return SymbolSuggestDefinition.from_dict(response.json())
+            if response.status_code == 400: return Error.from_dict(response.json())
+            if response.status_code == 401: return Error.from_dict(response.json())
+            if response.status_code == 403: return Error.from_dict(response.json())
+            if response.status_code == 500: return Error.from_dict(response.json())
+            if response.status_code == 502: return Error.from_dict(response.json())
+            if response.status_code == 504: return Error.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def search_symbols(self, criteria: str) -> Union[Error, SymbolSearchDefinition]:
+        """
+        Search for Symbols
+
+        Args:
+            criteria: Criteria are represented as Key/value pairs (`&` separated):
+                `N`: Name of Symbol. (Optional)
+                `C`: Asset categories. (Optional) Possible values:
+                        - `Future` or `FU`
+                        - `FutureOption` or `FO`
+                        - `Stock` or `S` (Default)
+                        - `StockOption` or `SO` (If root is specified, default category)
+                        - `Index` or `IDX`
+                        - `CurrencyOption` or `CO`
+                        - `MutualFund` or `MF`
+                        - `MoneyMarketFund` or `MMF`
+                        - `IndexOption` or `IO`
+                        - `Bond` or `B`
+                        - `Forex` or `FX`
+
+                `Cnt`: Country where the symbol is traded in. (Optional) Possible values:
+                        - `ALL` if not specified (Default)
+                        - `US`
+                        - `DE`
+                        - `CA`
+            #### For Equities Lookups:
+                 
+                `N`: partial/full symbol name, will return all symbols that contain the provided name value
+                
+                `Desc`: Name of the company
+                
+                `Flg`: indicates whether symbols no longer trading should be included in the results returned. (Optional) This criteria is not returned in the symbol data. Possible values:
+                    - `true`
+                    - `false` (Default)
+                    
+                `Cnt`: Country where the symbol is traded in. (Optional) Possible values:\n  - `ALL` if not specified (Default)\n  - `US`\n  - `DE`\n  - `CA`\n\n#### For Options Lookups:\n(Category=StockOption, IndexOption, FutureOption or CurrencyOption)\n\n`R`: Symbol root. Required field, the symbol the option is a derivative of, this search will not return options based on a partial root.\n\n`Stk`: Number of strikes prices above and below the underlying price\n  - Default value 3\n\n`Spl`: Strike price low\n\n`Sph`: Strike price high\n\n`Exd`: Number of expiration dates.\n  - Default value 3\n\n`Edl`: Expiration date low, ex: 01-05-2011\n\n`Edh`: Expiration date high, ex: 01-20-2011\n\n`OT`: Option type. Possible values:\n  - `Both` (Default)\n  - `Call`\n  - `Put`\n\n`FT`: Future type for FutureOptions. Possible values:\n  - `Electronic` (Default)\n  - `Pit`\n\n`ST`: Symbol type: Possible values:\n  - `Both`\n  - `Composite` (Default)\n  - `Regional`\n\n#### For Futures Lookups:\n(Category = Future)\n\n`Desc`: Description of symbol traded\n\n`R`: Symbol root future trades\n\n`FT`: Futures type. Possible values:\n  - `None`\n  - `PIT`\n  - `Electronic` (Default)\n  - `Combined`\n\n`Cur`: Currency. Possible values:\n  - `All`\n  - `USD` (Default)\n  - `AUD`\n  - `CAD`\n  - `CHF`\n  - `DKK`\n  - `EUR`\n  - `DBP`\n  - `HKD`\n  - `JPY`\n  - `NOK`\n  - `NZD`\n  - `SEK`\n  - `SGD`\n\n`Exp`: whether to include expired contracts\n  - `false` (Default)\n  - `true`\n\n`Cnt`: Country where the symbol is traded in. (Optional) Possible values:\n  - `ALL` if not specified (Default)\n  - `US`\n  - `DE`\n  - `CA`\n\n#### For Forex Lookups:\n\n`N`: partial/full symbol name. Use all or null for a list of all forex symbols\n\n`Desc`: Description\n\nNote:\n  - The exchange returned for all forex searches will be `FX`\n  - The country returned for all forex searches will be `FOREX`\n"""
+        url = f"{self.base_url}/v2/data/symbols/search/{criteria}"
+        response = await self.client.get(url, )
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 500, 502, 504}:
+            if response.status_code == 200: return SymbolSearchDefinition.from_dict(response.json())
+            if response.status_code == 400: return Error.from_dict(response.json())
+            if response.status_code == 401: return Error.from_dict(response.json())
+            if response.status_code == 403: return Error.from_dict(response.json())
+            if response.status_code == 404: return Error.from_dict(response.json())
+            if response.status_code == 500: return Error.from_dict(response.json())
+            if response.status_code == 502: return Error.from_dict(response.json())
+            if response.status_code == 504: return Error.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def stream_tick_bars(self, symbol: str, interval: int, bars_back: int) -> Union[Error, TickbarDefinition]:
+        """
+        Stream Tick Bars
+
+        Args:
+            symbol: A Symbol Name
+            interval: Interval for each bar returned (in ticks).
+            bars_back: The number of bars to stream, going back from current time.
+        """
+        url = f"{self.base_url}/v2/stream/tickbars/{symbol}/{interval}/{bars_back}"
+        response = await self.client.get(url, )
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 500, 502, 504}:
+            if response.status_code == 200: return TickbarDefinition.from_dict(response.json())
+            if response.status_code == 400: return Error.from_dict(response.json())
+            if response.status_code == 401: return Error.from_dict(response.json())
+            if response.status_code == 403: return Error.from_dict(response.json())
+            if response.status_code == 404: return Error.from_dict(response.json())
+            if response.status_code == 500: return Error.from_dict(response.json())
+            if response.status_code == 502: return Error.from_dict(response.json())
+            if response.status_code == 504: return Error.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def get_accounts(self, ) -> Union[Accounts, ErrorResponse]:
+        """Get Accounts
+"""
+        url = f"{self.base_url}/v3/brokerage/accounts"
+        response = await self.client.get(url, )
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return Accounts.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def get_balances(self, accounts: str) -> Union[Balances, ErrorResponse]:
+        """Get Balances
+
+Args:
+    accounts: List of valid Account IDs for the authenticated user in comma separated format; for example `\"61999124,68910124\"`. 1 to 25 Account IDs can be specified, comma separated. Recommended batch size is 10."""
+        url = f"{self.base_url}/v3/brokerage/accounts/{accounts}/balances"
+        response = await self.client.get(url, )
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return Balances.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def get_balances_bod(self, accounts: str) -> Union[BalancesBOD, ErrorResponse]:
+        """Get Balances BOD
+
+Args:
+    accounts: List of valid Account IDs for the authenticated user in comma separated format; for example `\"61999124,68910124\"`. 1 to 25 Account IDs can be specified, comma separated. Recommended batch size is 10."""
+        url = f"{self.base_url}/v3/brokerage/accounts/{accounts}/bodbalances"
+        response = await self.client.get(url, )
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return BalancesBOD.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def get_historical_orders(self, accounts: str, since: str, page_size: Optional[int] = 600, next_token: Optional[str] = None) -> Union[ErrorResponse, HistoricalOrders]:
+        """Get Historical Orders
+
+Args:
+    accounts: List of valid Account IDs for the authenticated user in comma separated format; for example `\"61999124,68910124\"`. 1 to 25 Account IDs can be specified, comma separated. Recommended batch size is 10.
+    since: Historical orders since date. For example `\"2006-01-13\",\"01-13-2006\",\"2006/01/13\",\"01/13/2006\"`. Limited to 90 days prior to the current date.
+    page_size: The number of requests returned per page when paginating responses. If not provided, results will not be paginated and a maximum of 600 orders is returned.
+    next_token: An encrypted token with a lifetime of 1 hour for use with paginated order responses. This is returned with paginated results, and used in only the subsequent request which will return a new nextToken until there are fewer returned orders than the requested pageSize. If the number of returned orders equals the pageSize, and there are no additional orders, the nextToken will not be generated."""
+        url = f"{self.base_url}/v3/brokerage/accounts/{accounts}/historicalorders"
+        response = await self.client.get(url, params={k: v for k, v in {'since': since, 'pageSize': page_size, 'nextToken': next_token}.items() if v is not None})
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return HistoricalOrders.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def get_historical_orders_by_order_id(self, accounts: str, order_ids: str, since: str) -> Union[ErrorResponse, HistoricalOrdersById]:
+        """Get Historical Orders By Order ID
+
+Args:
+    accounts: List of valid Account IDs for the authenticated user in comma separated format; for example `\"61999124,68910124\"`. 1 to 25 Account IDs can be specified, comma separated. Recommended batch size is 10.
+    order_ids: List of valid Order IDs for the authenticated user for given accounts in comma separated format; for example `\"123456789,286179863\"`. 1 to 50 Order IDs can be specified, comma separated.
+    since: Historical orders since date. For example `\"2006-01-13\",\"01-13-2006\",\"2006/01/13\",\"01/13/2006\"`. Limited to 90 days prior to the current date."""
+        url = f"{self.base_url}/v3/brokerage/accounts/{accounts}/historicalorders/{order_ids}"
+        response = await self.client.get(url, params={k: v for k, v in {'since': since}.items() if v is not None})
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return HistoricalOrdersById.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def get_orders(self, accounts: str, page_size: Optional[int] = 600, next_token: Optional[str] = None) -> Union[ErrorResponse, Orders]:
+        """Get Orders
+
+Args:
+    accounts: List of valid Account IDs for the authenticated user in comma separated format; for example `\"61999124,68910124\"`. 1 to 25 Account IDs can be specified, comma separated. Recommended batch size is 10.
+    page_size: The number of requests returned per page when paginating responses. If not provided, results will not be paginated and a maximum of 600 orders is returned.
+    next_token: An encrypted token with a lifetime of 1 hour for use with paginated order responses. This is returned with paginated results, and used in only the subsequent request which will return a new nextToken until there are fewer returned orders than the requested pageSize. If the number of returned orders equals the pageSize, and there are no additional orders, the nextToken will not be generated."""
+        url = f"{self.base_url}/v3/brokerage/accounts/{accounts}/orders"
+        response = await self.client.get(url, params={k: v for k, v in {'pageSize': page_size, 'nextToken': next_token}.items() if v is not None})
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return Orders.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def get_orders_by_order_id(self, accounts: str, order_ids: str) -> Union[ErrorResponse, OrdersById]:
+        """Get Orders By Order ID
+
+Args:
+    accounts: List of valid Account IDs for the authenticated user in comma separated format; for example `\"61999124,68910124\"`. 1 to 25 Account IDs can be specified, comma separated. Recommended batch size is 10.
+    order_ids: List of valid Order IDs for the authenticated user for given accounts in comma separated format; for example `\"123456789,286179863\"`. 1 to 50 Order IDs can be specified, comma separated."""
+        url = f"{self.base_url}/v3/brokerage/accounts/{accounts}/orders/{order_ids}"
+        response = await self.client.get(url, )
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return OrdersById.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def get_positions(self, accounts: str, symbol: Optional[str] = None) -> Union[ErrorResponse, Positions]:
+        """Get Positions
+
+Args:
+    accounts: List of valid Account IDs for the authenticated user in comma separated format; for example `\"61999124,68910124\"`. 1 to 25 Account IDs can be specified, comma separated. Recommended batch size is 10.
+    symbol: List of valid symbols in comma separated format; for example `MSFT,MSFT *,AAPL`. You can use an * as wildcard to make more complex filters.\n\nExamples of the wildcard being used: \n\n  * Get all options for MSFT: symbol=`MSFT *`\n  * Get MSFT and all its options: symbol=`MSFT,MSFT *`\n  * Get all MSFT options expiring in 2023: symbol=`MSFT 23*`\n  * Get all MSFT options expiring in March 2023: symbol=`MSFT 2303*`\n  * Get all options expiring in March 2023: symbol=`* 2303*`\n  * Get all call options expiring in March 2023: symbol=`* 2303*C*`\n  * Get BHM*: symbol=`BHM**`"""
+        url = f"{self.base_url}/v3/brokerage/accounts/{accounts}/positions"
+        response = await self.client.get(url, params={k: v for k, v in {'symbol': symbol}.items() if v is not None})
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return Positions.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def confirm_order(self, body: OrderRequest) -> Union[ErrorResponse, List[OrderConfirmResponses]]:
+        """Confirm Order
+"""
+        url = f"{self.base_url}/v3/orderexecution/orderconfirm"
+        response = await self.client.post(url, json=body)
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return [OrderConfirmResponses.from_dict(i) for i in response.json()]
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def confirm_group_order(self, body: GroupOrderRequest) -> Union[ErrorResponse, List[OrderConfirmResponses]]:
+        """Confirm Group Order
+"""
+        url = f"{self.base_url}/v3/orderexecution/ordergroupconfirm"
+        response = await self.client.post(url, json=body)
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return [OrderConfirmResponses.from_dict(i) for i in response.json()]
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def place_group_order(self, body: GroupOrderRequest) -> Union[ErrorResponse, List[OrderResponses]]:
+        """Place Group Order
+"""
+        url = f"{self.base_url}/v3/orderexecution/ordergroups"
+        response = await self.client.post(url, json=body)
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return [OrderResponses.from_dict(i) for i in response.json()]
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def place_order(self, body: OrderRequest) -> Union[ErrorResponse, List[OrderResponses]]:
+        """Place Order
+"""
+        url = f"{self.base_url}/v3/orderexecution/orders"
+        print(json.dumps(body.to_dict(),indent=4))
+        response = await self.client.post(url, json=body.to_dict(), headers={"content-type": "application/json","Authorization": f"Bearer {self.access_token}"})
+        print(response.json())
+        # response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return OrderResponses.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def replace_order(self, order_id: str, body: OrderReplaceRequest) -> Union[ErrorResponse, OrderResponse]:
+        """Replace Order
+
+Args:
+    order_id: OrderID for order to replace. Equity, option or future orderIDs should not include dashes (E.g. `1-2345-6789`). Valid format orderId=`123456789`"""
+        url = f"{self.base_url}/v3/orderexecution/orders/{order_id}"
+        response = await self.client.put(url, json=body)
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return OrderResponse.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def cancel_order(self, order_id: str) -> Union[ErrorResponse, OrderResponse]:
+        """Cancel Order
+
+Args:
+    order_id: Order ID for cancellation request. Equity, option or future orderIDs should not include dashes (E.g. `1-2345-6789`). Valid format orderId=`123456789`"""
+        url = f"{self.base_url}/v3/orderexecution/orders/{order_id}"
+        response = await self.client.delete(url, )
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return OrderResponse.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def get_bars(self, symbol: str, interval: Optional[str] = None, unit: Optional[str] = None, barsback: Optional[str] = None, firstdate: Optional[str] = None, lastdate: Optional[str] = None, sessiontemplate: Optional[str] = None, startdate: Optional[str] = None) -> Union[Bars, ErrorResponse]:
+        """Get Bars
+
+Args:
+    symbol: The valid symbol string.
+    interval: Default: `1`.  Interval that each bar will consist of -  for minute bars, the number of minutes aggregated in a single bar.  For bar units other than minute, value must be `1`.  For unit `Minute` the max allowed `Interval` is 1440.
+    unit: Default: `Daily`. The unit of time for each bar interval. Valid values are: `Minute, Daily, Weekly, Monthly`.
+    barsback: Default: `1`.  Number of bars back to fetch (or retrieve). The maximum number of intraday bars back that a user can query is 57,600. There is no limit on daily, weekly, or monthly bars. This parameter is mutually exclusive with `firstdate`
+    firstdate: Does not have a default value. The first date formatted as `YYYY-MM-DD`,`2020-04-20T18:00:00Z`. This parameter is mutually exclusive with `barsback`.
+    lastdate: Defaults to current timestamp. The last date formatted as `YYYY-MM-DD`,`2020-04-20T18:00:00Z`. This parameter is mutually exclusive with `startdate` and should be used instead of that parameter, since `startdate` is now deprecated.
+    sessiontemplate: United States (US) stock market session templates, that extend bars returned to include \nthose outside of the regular trading session. Ignored for non-US equity symbols. Valid values are:\n`USEQPre`, `USEQPost`, `USEQPreAndPost`, `USEQ24Hour`,`Default`.
+    startdate: Defaults to current timestamp. The last date formatted as `YYYY-MM-DD`,`2020-04-20T18:00:00Z`. This parameter is mutually exclusive with `lastdate`. This parameter is deprecated; use `lastdate` instead of `startdate`."""
+        url = f"{self.base_url}/v3/marketdata/barcharts/{symbol}"
+        response = await self.client.get(url, params={k: v for k, v in {'interval': interval, 'unit': unit, 'barsback': barsback, 'firstdate': firstdate, 'lastdate': lastdate, 'sessiontemplate': sessiontemplate, 'startdate': startdate}.items() if v is not None})
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return Bars.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
+    
+    async def stream_bars(self, symbol: str, interval: Optional[str] = '1', unit: Optional[str] = 'Daily', barsback: Optional[str] = None, sessiontemplate: Optional[str] = None) -> AsyncGenerator[Union[Bar, Heartbeat, StreamErrorResponse], None]:
+        """Stream Bars
+
+Args:
+    symbol: The valid symbol string.
+Args:
+    interval: Interval that each bar will consist of -  for minute bars, the number of\nminutes aggregated in a single bar. For bar units other than minute, value must be `1`.
+Args:
+    unit: Unit of time for each bar interval. Valid values are: `minute`, `daily`, `weekly`, and `monthly`.
+Args:
+    barsback: The bars back - the max value is 57600.
+Args:
+    sessiontemplate: United States (US) stock market session templates, that extend bars returned to include \nthose outside of the regular trading session. Ignored for non-US equity symbols. Valid values are:\n`USEQPre`, `USEQPost`, `USEQPreAndPost`, `USEQ24Hour`, `Default`."""
+        url = f"{self.base_url}/v3/marketdata/stream/barcharts/{symbol}"
+        async with self.client.stream('GET', url, params={k: v for k, v in {'interval': interval, 'unit': unit, 'barsback': barsback, 'sessiontemplate': sessiontemplate}.items() if v is not None}) as response:
+            response.raise_for_status()
+            print(response.status_code)
+            if response.status_code in {400, 401, 403, 404, 429, 503, 504}:
+                async for line in response.aiter_lines():
+                    yield ErrorResponse.from_dict(json.loads(line))
             else:
-                raise ValueError(f"Error obtaining token: {response.text}")
+                async for line in response.aiter_lines():
+                    if not line or not line.strip():
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        # skip malformed lines
+                        continue
+                    yield TypeAdapter(Union[Bar, Heartbeat, StreamErrorResponse]).validate_python(obj)
 
-    async def _refresh_token_loop(self) -> None:
-        """
-        Periodically refreshes the access token before it expires.
-
-        :raises ValueError: If no refresh token is available or the refresh request fails.
-        """
-        while True:
-            if not self.refresh_token:
-                print("No refresh token available.")
-                return
-
-            now = datetime.now()
-            refresh_in = self.token_expiry - now - self.refresh_margin
-            refresh_in = max(refresh_in.seconds, 0)
-            print(f"Refreshing token in {refresh_in:.1f} seconds")
-            await asyncio.sleep(refresh_in)
-            print("Refreshing access token...")
-            await self._refresh_access_token()
+    async def get_crypto_symbol_names(self, ) -> Union[ErrorResponse, SymbolNames]:
+        """Get Crypto Symbol Names
+"""
+        url = f"{self.base_url}/v3/marketdata/symbollists/cryptopairs/symbolnames"
+        response = await self.client.get(url, )
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return SymbolNames.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
     
-    async def _refresh_access_token(self) -> None:
-        """
-        Refreshes the access token using the refresh token.
+    async def get_symbol_details(self, symbols: str) -> Union[ErrorResponse, SymbolDetailsResponse]:
+        """Get Symbol Details
 
-        :raises ValueError: If no refresh token is available or the refresh request fails.
-        """
-        if not self.refresh_token:
-            raise ValueError("No refresh token available")
-        
-        data = {
-            'grant_type': 'refresh_token',
-            'client_id': self.client_id,
-            'client_secret': self.client_secret,
-            'refresh_token': self.refresh_token
-        }
-        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-        response = await self._asend_request(url=TOKEN_URL, data=data, headers=headers)
-        if response.status_code == 200:
-            body = response.json()
-            self.access_token = body['access_token']
-            self.token_expiry = datetime.now() + timedelta(seconds=body.get('expires_in', 1200))
-        else:
-            raise ValueError(f"Error refreshing token: {response.text}")
-
-    def _authenticate(self):
-        """Handles the authentication flow."""
-        self._start_server()
-        webbrowser.open(self._generate_auth_url())
-        
-        while self.access_token is None:
-            pass
-
-    async def _async_authenticate(self):
-        await self._start_async_server()
-        webbrowser.open(self._generate_auth_url())
-        # Wait for the first auth to complete
-        await self.auth_code_event.wait()
-        await self._stop_async_server()
+Args:
+    symbols: List of valid symbols in comma separated format; for example `\"MSFT,BTCUSD\"`, no more than 50 symbols per request."""
+        url = f"{self.base_url}/v3/marketdata/symbols/{symbols}"
+        response = await self.client.get(url, )
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return SymbolDetailsResponse.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
     
-    def _send_request(self, 
-                      endpoint: str, 
-                      params: Optional[dict] = None, 
-                      method: Literal['GET', 'POST', 'PUT', 'DELETE'] = 'GET', 
-                      headers: Optional[dict] = None, 
-                      payload: Optional[dict] = None) -> dict:
-        """
-        Sends a synchronous HTTP request to the TradeStation API.
-
-        :param endpoint: The API endpoint to send the request to.
-        :param params: Query parameters to include in the request.
-        :param method: HTTP method to use for the request. Valid values are 'GET', 'POST', 'PUT', 'DELETE'.
-        :param headers: Optional headers to include in the request. If not provided, default headers with authorization will be used.
-        :param payload: Optional JSON payload to include in the request body.
-        :return: A dictionary containing the JSON response from the API.
-        :raises ValueError: If the request fails or invalid data is received.
-        """
-        url = f"{self.api_url}/{endpoint}"
-        if not headers:
-            headers = {"Authorization": f"Bearer {self.access_token}"}
-        with httpx.Client() as client:
-            response = client.request(method, url, headers=headers, params=params, json=payload)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            request_error = ErrorResponse.from_dict(ErrorResponse)
-            raise ValueError(f"Request failed with status code {response.status_code} and error: \"{request_error.error}\" with message: \"{request_error.message}\"")
-
-    async def _asend_request(self, 
-                             endpoint: Optional[str] = None, 
-                             url: Optional[str] = None, 
-                             params: Optional[dict] = None, 
-                             method: Literal['GET', 'POST', 'PUT', 'DELETE'] = 'GET', 
-                             headers: Optional[dict] = None, 
-                             payload: Optional[dict] = None) -> dict:
-        """
-        Sends an asynchronous HTTP request to the TradeStation API.
-
-        :param endpoint: The API endpoint to send the request to. Either `endpoint` or `url` must be provided.
-        :param url: The full URL to send the request to. Overrides `endpoint` if provided.
-        :param params: Query parameters to include in the request.
-        :param method: HTTP method to use for the request. Valid values are 'GET', 'POST', 'PUT', 'DELETE'.
-        :param headers: Optional headers to include in the request. If not provided, default headers with authorization will be used.
-        :param payload: Optional JSON payload to include in the request body.
-        :return: A dictionary containing the JSON response from the API.
-        :raises ValueError: If the request fails or invalid parameters are provided.
-        """
-        if not url:
-            if not endpoint:
-                raise ValueError("Either endpoint or url must be provided.")
-            url = f"{self.api_url}/{endpoint}"
-
-        if not headers and self.access_token:
-            headers = {"Authorization": f"Bearer {self.access_token}"}
-
-        async with httpx.AsyncClient() as client:
-            response = await client.request(method, url, headers=headers, params=params, json=payload)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                raise ValueError(f"Request failed with status code {response.status_code} and message: \"{response.text}\"")
-
-    def _stream_request(self, 
-                        endpoint: str, 
-                        params: Optional[dict] = None, 
-                        method: Literal['GET', 'POST', 'PUT', 'DELETE'] = 'GET', 
-                        headers: Optional[dict] = None, 
-                        payload: Optional[dict] = None, 
-                        timeout: Union[int, float] = 10) -> Generator[dict, None, None]:
-        """
-        Streams a synchronous HTTP request to the TradeStation API.
-
-        :param endpoint: The API endpoint to send the request to.
-        :param params: Query parameters to include in the request.
-        :param method: HTTP method to use for the request. Valid values are 'GET', 'POST', 'PUT', 'DELETE'.
-        :param headers: Optional headers to include in the request. If not provided, default headers with authorization will be used.
-        :param payload: Optional JSON payload to include in the request body.
-        :param timeout: Timeout for the request in seconds.
-        :return: A generator yielding parsed JSON data from the stream.
-        :raises ValueError: If the request fails or invalid data is received.
-        """
-        url = f"{self.api_url}/{endpoint}"
-        if not headers and self.access_token:
-            headers = {"Authorization": f"Bearer {self.access_token}"}
-
-        with httpx.stream(method, url, headers=headers, params=params, json=payload, timeout=timeout) as response:
-            if response.status_code == 200:
-                for line in response.iter_lines():
-                    if line:
-                        try:
-                            data = json.loads(line)
-                            yield data
-                        except json.JSONDecodeError:
-                            raise ValueError(f"Invalid JSON received: {line}")
-            else:
-                raise ValueError(f"Request failed with status code {response.status_code} and message: \"{response.read().decode()}\"")
+    async def get_activation_triggers(self, ) -> Union[ActivationTriggers, ErrorResponse]:
+        """Get Activation Triggers
+"""
+        url = f"{self.base_url}/v3/orderexecution/activationtriggers"
+        response = await self.client.get(url, )
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return ActivationTriggers.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
     
-    async def _astream_request(self, 
-                               endpoint: str, 
-                               params: Optional[dict] = None, 
-                               method: Literal['GET', 'POST', 'PUT', 'DELETE'] = 'GET', 
-                               headers: Optional[dict] = None, 
-                               payload: Optional[dict] = None, 
-                               timeout: Union[int, float] = 10) -> AsyncGenerator[dict, None]:
-        """
-        Streams an asynchronous HTTP request to the TradeStation API.
-
-        :param endpoint: The API endpoint to send the request to.
-        :param params: Query parameters to include in the request.
-        :param method: HTTP method to use for the request. Valid values are 'GET', 'POST', 'PUT', 'DELETE'.
-        :param headers: Optional headers to include in the request. If not provided, default headers with authorization will be used.
-        :param payload: Optional JSON payload to include in the request body.
-        :param timeout: Timeout for the request in seconds.
-        :return: An asynchronous generator yielding parsed JSON data from the stream.
-        :raises ValueError: If the request fails or invalid data is received.
-        """
-        url = f"{self.api_url}/{endpoint}"
-        if not headers and self.access_token:
-            headers = {"Authorization": f"Bearer {self.access_token}"}
-        
-        async with httpx.AsyncClient() as client:
-            async with client.stream(method, url, headers=headers, params=params, json=payload, timeout=timeout) as response:
-                if response.status_code == 200:
-                    async for line in response.aiter_lines():
-                        if line:
-                            try:
-                                data = json.loads(line)
-                                yield data
-                            except json.JSONDecodeError:
-                                raise ValueError(f"Invalid JSON received: {line}")
-                else:
-                    raise ValueError(f"Request failed with status code {response.status_code} and message: \"{await response.aread()}\"")
-
-    ### Market Data ###
+    async def routes(self, ) -> Union[ErrorResponse, Routes]:
+        """Get Routes
+"""
+        url = f"{self.base_url}/v3/orderexecution/routes"
+        response = await self.client.get(url, )
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return Routes.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
     
-    def get_historical_data(self, 
-                 symbol: str, 
-                 interval: int = 1, 
-                 unit: Literal['Minute', 'Daily', 'Weekly', 'Monthly'] = 'Daily', 
-                 bars_back: Optional[int] = None, 
-                 first_date: Optional[datetime] = None, 
-                 last_date: Optional[datetime] = None,
-                 session_template: Literal['USEQPre', 'USEQPost', 'USEQPreAndPost', 'USEQ24Hour', 'Default'] = 'Default'):
-        """Fetches historical market data bars from TradeStation."""
-        if bars_back and first_date:
-            raise ValueError("bars_back and first_date should be mutually exclusive. Choose one.")
-        if not bars_back and not first_date:
-            bars_back = 1
-        
-        params = {
-            'interval': interval,
-            'unit': unit,
-            'sessiontemplate': session_template
-        }
-        if first_date:
-            params['firstdate'] = first_date.replace(microsecond=0).astimezone(timezone.utc).isoformat()
-        else:
-            params['barsback'] = bars_back
-        
-        if last_date:
-            params['lastdate'] = last_date.replace(microsecond=0).astimezone(timezone.utc).isoformat()
-        bars = (Bar.from_dict(b) for b in self._send_request(f"marketdata/barcharts/{symbol}", params).get('Bars', []))
-        return bars
+    async def get_option_expirations(self, underlying: str, strike_price: Optional[float] = None) -> Union[ErrorResponse, Expirations]:
+        """Get Option Expirations
+
+Args:
+    underlying: The symbol for the underlying security on which the option contracts are based. The underlying symbol must be an equity or index.
+    strike_price: Strike price. If provided, only expirations for that strike price will be returned."""
+        url = f"{self.base_url}/v3/marketdata/options/expirations/{underlying}"
+        response = await self.client.get(url, params={k: v for k, v in {'strikePrice': strike_price}.items() if v is not None})
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 429, 503, 504}:
+            if response.status_code == 200: return Expirations.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
     
-    async def aget_historical_data(self, 
-                                symbol: str, 
-                                interval: int = 1, 
-                                unit: Literal['Minute', 'Daily', 'Weekly', 'Monthly'] = 'Daily', 
-                                bars_back: Optional[int] = None, 
-                                first_date: Optional[datetime] = None, 
-                                last_date: Optional[datetime] = None,
-                                session_template: Literal['USEQPre', 'USEQPost', 'USEQPreAndPost', 'USEQ24Hour', 'Default'] = 'Default'):
-        """Fetches historical market data bars from TradeStation."""
-        if bars_back and first_date:
-            raise ValueError("bars_back and first_date should be mutually exclusive. Choose one.")
-        if not bars_back and not first_date:
-            bars_back = 1
-        
-        params = {
-            'interval': interval,
-            'unit': unit,
-            'sessiontemplate': session_template
-        }
-        if first_date:
-            params['firstdate'] = first_date.replace(microsecond=0).astimezone(timezone.utc).isoformat()
-        else:
-            params['barsback'] = bars_back
-        
-        if last_date:
-            params['lastdate'] = last_date.replace(microsecond=0).astimezone(timezone.utc).isoformat()
-        res = await self._asend_request(f"marketdata/barcharts/{symbol}", params)
-        bars = (Bar.from_dict(b) for b in res.get('Bars', []))
-        return bars
-
-    def stream_tick_bars(self,
-                         symbol: str, 
-                         unit: Literal['Minute', 'Daily', 'Weekly', 'Monthly'] = 'Daily', 
-                         interval: int = 1,
-                         bars_back: int = None,
-                         session_template: Literal['USEQPre', 'USEQPost', 'USEQPreAndPost', 'USEQ24Hour', 'Default'] = 'Default') -> Generator[dict, None, None]:
-        """
-        Streams tick bars data for the specified symbol.
-
-        :param symbol: The symbol to stream data for.
-        :param interval: Interval for each bar one of: 'Minute', 'Daily', 'Weekly', 'Monthly'.
-        :param bars_back: Number of bars to retrieve.
-        :param session_template: Session template for the data stream.
-        :return: A generator yielding parsed JSON data from the stream, the data can be one of the following:
-            - "Heartbeat": Heartbeat message indicating the stream is alive.
-            - "Error": Error message indicating an issue with the stream.
-            - Tick bar data: Actual tick bar data for the specified symbol.
-        """
-
-        # Validate inputs
-        if not (1 <= interval <= 64999):
-            raise ValueError("Interval must be between 1 and 64999 ticks.")
-        if bars_back and not (1 <= bars_back <= 57600):
-            raise ValueError("BarsBack must be between 1 and 57600.")
-
-        params = {
-            "interval":interval,
-            "unit":unit,
-            'sessiontemplate': session_template
-        }
-        if bars_back:
-            params['barsback'] = bars_back
-        
-        stream_generator = self._stream_request(f"marketdata/stream/barcharts/{symbol}", params=params)
-        return (Error.from_dict(d) if "Error" in d else Heartbeat.from_dict(d) if "Heartbeat" in d else Bar.from_dict(d) for d in stream_generator)
+    async def get_option_risk_reward(self, body: RiskRewardAnalysisInput) -> Union[ErrorResponse, RiskRewardAnalysisResult]:
+        """Get Option Risk Reward
+"""
+        url = f"{self.base_url}/v3/marketdata/options/riskreward"
+        response = await self.client.post(url, json=body)
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 429, 503, 504}:
+            if response.status_code == 200: return RiskRewardAnalysisResult.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
     
-    async def astream_tick_bars(self,
-                               symbol: str, 
-                               unit: Literal['Minute', 'Daily', 'Weekly', 'Monthly'] = 'Daily', 
-                               interval: int = 1,
-                               bars_back: int = None,
-                               session_template: Literal['USEQPre', 'USEQPost', 'USEQPreAndPost', 'USEQ24Hour', 'Default'] = 'Default',
-                               data_handler: Optional[callable] = None,
-                               error_handler: Optional[callable] = None,
-                               heartbeat_handler: Optional[callable] = None) -> Union[AsyncGenerator[dict, None], None]:
-        """
-        Asynchronously streams tick bars data for the specified symbol.
-
-        :param symbol: The symbol to stream data for.
-        :param unit: Interval unit ('Minute', 'Daily', 'Weekly', 'Monthly').
-        :param interval: Interval for each bar.
-        :param bars_back: Number of bars to retrieve.
-        """
-
-        # Validate inputs
-        if not (1 <= interval <= 64999):
-            raise ValueError("Interval must be between 1 and 64999 ticks.")
-        if bars_back and not (1 <= bars_back <= 57600):
-            raise ValueError("BarsBack must be between 1 and 57600.")
-
-        # Construct the HTTP SSE URL
-        params = {
-            "interval": interval,
-            "unit": unit,
-            "sessiontemplate": session_template
-        }
-        if bars_back:
-            params["barsback"] = bars_back
-
-        data_generator = self._astream_request(f"marketdata/stream/barcharts/{symbol}", params=params)
-        if not data_handler:
-            return (Error.from_dict(d) if "Error" in d else Heartbeat.from_dict(d) if "Heartbeat" in d else Bar.from_dict(d) async for d in data_generator)
-        async for data in data_generator:
-            if data:
-                if "Heartbeat" in data:
-                    if heartbeat_handler:
-                        heartbeat_handler(data)
-                elif "Error" in data:
-                    if error_handler:
-                        error_handler(data)
-                else:
-                    data_handler(data)
-            else:
-                if error_handler:
-                    error_handler({"Error": "InvalidData",
-                                "Message": "Received empty data from the stream."})
-                else:
-                    raise ValueError("Received empty data from the stream.")
-
-    ### Brokerage services ###
+    async def get_option_spread_types(self, ) -> Union[ErrorResponse, SpreadTypes]:
+        """Get Option Spread Types
+"""
+        url = f"{self.base_url}/v3/marketdata/options/spreadtypes"
+        response = await self.client.get(url, )
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 429, 503, 504}:
+            if response.status_code == 200: return SpreadTypes.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
     
-    def get_accounts(self):
-        return [Account.from_dict(a) for a in self._send_request("brokerage/accounts").get("Accounts", [])]
+    async def get_option_strikes(self, underlying: str, spread_type: Optional[str] = 'Single', strike_interval: Optional[int] = 1, expiration: Optional[str] = None, expiration2: Optional[str] = None) -> Union[ErrorResponse, Strikes]:
+        """Get Option Strikes
+
+Args:
+    underlying: The symbol for the underlying security on which the option contracts are based. The underlying symbol must be an equity or index.
+    spread_type: The name of the spread type to get the strikes for. This value can be obtained from the [Get Option Spread Types](#operation/GetOptionSpreadTypes) endpoint.
+    strike_interval: Specifies the desired interval between the strike prices in a spread. It must be greater than or equal to 1. A value of 1 uses consecutive strikes; a value of 2 skips one between strikes; and so on.
+    expiration: Date on which the option contract expires; must be a valid expiration date. Defaults to the next contract expiration date.
+    expiration2: Second contract expiration date required for Calendar and Diagonal spreads."""
+        url = f"{self.base_url}/v3/marketdata/options/strikes/{underlying}"
+        response = await self.client.get(url, params={k: v for k, v in {'spreadType': spread_type, 'strikeInterval': strike_interval, 'expiration': expiration, 'expiration2': expiration2}.items() if v is not None})
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 429, 503, 504}:
+            if response.status_code == 200: return Strikes.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
     
-    async def aget_accounts(self):
-        data = await self._asend_request("brokerage/accounts")
-        return [Account.from_dict(a) for a in data.get("Accounts", [])]
+    async def get_option_chain(self, underlying: str, expiration: Optional[str] = None, expiration2: Optional[str] = None, strike_proximity: Optional[int] = 5, spread_type: Optional[str] = 'Single', risk_free_rate: Optional[float] = None, price_center: Optional[float] = None, strike_interval: Optional[int] = 1, enable_greeks: Optional[bool] = True, strike_range: Optional[str] = 'All', option_type: Optional[str] = 'All') -> Union[ErrorResponse, Spread]:
+        """Stream Option Chain
 
-    def get_balances(self, accounts:Union[str, Account, List[str], List[Account]]):
-        """Fetches account balances for the specified accounts."""
-        if isinstance(accounts, str) or isinstance(accounts, Account):
-            accounts = [accounts]
-        accounts = [a.account_ID if isinstance(a, Account) else a for a in accounts]
-        accounts = ",".join(accounts)
-        return self._send_request(f"brokerage/accounts/{accounts}/balances")
+Args:
+    underlying: The symbol for the underlying security on which the option contracts are based.
+    expiration: Date on which the option contract expires; must be a valid expiration date. Defaults to the next contract expiration date.
+    expiration2: Second contract expiration date required for Calendar and Diagonal spreads.
+    strike_proximity: Specifies the number of spreads to display above and below the priceCenter.
+    spread_type: Specifies the name of the spread type to use.
+    risk_free_rate: The theoretical rate of return of an investment with zero risk. Defaults to the current quote for $IRX.X. The percentage rate should be specified as a decimal value. For example, to use 2% for the rate, pass in 0.02.
+    price_center: Specifies the strike price center. Defaults to the last quoted price for the underlying security.
+    strike_interval: Specifies the desired interval between the strike prices in a spread. It must be greater than or equal to 1. A value of 1 uses consecutive strikes; a value of 2 skips one between strikes; and so on.
+    enable_greeks: Specifies whether or not greeks properties are returned.
+    strike_range: * If the filter is `ITM` (in-the-money), the chain includes only spreads that have an intrinsic value greater than zero.\n* If the filter is `OTM` (out-of-the-money), the chain includes only spreads that have an intrinsic value equal to zero.
+    option_type: Filters the spreads by a specific option type. Valid values are `All`, `Call`, and `Put`."""
+        url = f"{self.base_url}/v3/marketdata/stream/options/chains/{underlying}"
+        response = await self.client.get(url, params={k: v for k, v in {'expiration': expiration, 'expiration2': expiration2, 'strikeProximity': strike_proximity, 'spreadType': spread_type, 'riskFreeRate': risk_free_rate, 'priceCenter': price_center, 'strikeInterval': strike_interval, 'enableGreeks': enable_greeks, 'strikeRange': strike_range, 'optionType': option_type}.items() if v is not None})
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 429, 503, 504}:
+            if response.status_code == 200: return Spread.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
     
-    async def aget_balances(self, accounts:Union[str, List[str]]):
-        """Fetches account balances for the specified accounts asynchronously."""
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        accounts = ",".join(accounts)
-        return await self._asend_request(f"brokerage/accounts/{accounts}/balances")
+    async def get_option_quotes(self, legs_0_symbol: str, legs_0_ratio: Optional[float] = 1, risk_free_rate: Optional[float] = None, enable_greeks: Optional[bool] = True) -> Union[ErrorResponse, Spread]:
+        """Stream Option Quotes
+
+Args:
+    legs_0_symbol: * `legs`: Individual components of a multi-part trade.\n* `[0]`: Represents the position in the legs array.\n* `Symbol`: Option contract symbol or underlying symbol to be traded for this leg. In some cases, the space in an option symbol may need to be explicitly URI encoded as %20, such as `MSFT%20220916C305`.
+    legs_0_ratio: * `legs`: Individual components of a multi-part trade.\n* `[0]`: Represents the position in the legs array.\n* `Ratio`: The number of option contracts or underlying shares for this leg, relative to the other legs. Use a positive number to represent a buy trade and a negative number to represent a sell trade. For example, a quote for a Butterfly spread can be requested using ratios of 1, -2, and 1: buy 1 contract of the first leg, sell 2 contracts of the second leg, and buy 1 contract of the third leg.
+    risk_free_rate: The theoretical rate of return of an investment with zero risk. Defaults to the current quote for $IRX.X. The percentage rate should be specified as a decimal value. For example, to use 2% for the rate, pass in 0.02.
+    enable_greeks: Specifies whether or not greeks properties are returned."""
+        url = f"{self.base_url}/v3/marketdata/stream/options/quotes"
+        response = await self.client.get(url, params={k: v for k, v in {'legs[0].Symbol': legs_0_symbol, 'legs[0].Ratio': legs_0_ratio, 'riskFreeRate': risk_free_rate, 'enableGreeks': enable_greeks}.items() if v is not None})
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 429, 503, 504}:
+            if response.status_code == 200: return Spread.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
     
-    def get_historical_orders(self, accounts:Union[str, List[str]], since: datetime) -> Tuple[Generator[Order, None, None], Generator[OrderError, None, None]]:
-        """
-        Fetches historical orders and open orders for the given Accounts since given date
-        sorted in descending order of time placed for open and time executed for closed.
-        Request valid for all account types.
-        """
+    async def get_quote_snapshots(self, symbols: str) -> Union[ErrorResponse, QuoteSnapshot]:
+        """Get Quote Snapshots
 
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        accounts = ",".join(accounts)
-        res = self._send_request(f"brokerage/accounts/{accounts}/historicalorders", params={"since":since.replace(microsecond=0).astimezone(timezone.utc).isoformat()})
-        orders = (Order.from_dict(d) for d in res.get('Orders', []))
-        errors = (OrderError.from_dict(d) for d in res.get('Errors', []))
-        return orders, errors
+Args:
+    symbols: List of valid symbols in comma separated format; for example `\"MSFT,BTCUSD\"`. No more than 100 symbols per request."""
+        url = f"{self.base_url}/v3/marketdata/quotes/{symbols}"
+        response = await self.client.get(url, )
+        response.raise_for_status()
+        if response.status_code in {200, 400, 401, 403, 404, 429, 503, 504}:
+            if response.status_code == 200: return QuoteSnapshot.from_dict(response.json())
+            if response.status_code == 400: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 401: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 403: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 404: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 429: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 503: return ErrorResponse.from_dict(response.json())
+            if response.status_code == 504: return ErrorResponse.from_dict(response.json())
+        raise ValueError('Unexpected response status code: {response.status_code}')
     
-    def get_orders(self, accounts:Union[str, List[str]]) -> Tuple[Generator[Order, None, None], Generator[OrderError, None, None]]:
-        """
-        Fetches today's orders and open orders for the given Accounts, 
-        sorted in descending order of time placed for open and time executed for closed.
-        Request valid for all account types.
-        """
+    async def get_quote_change_stream(self, symbols: str) -> AsyncGenerator[Union[Heartbeat, QuoteStream, StreamErrorResponse], None]:
+        """Stream Quotes
 
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        accounts = ",".join(accounts)
-        res = self._send_request(f"brokerage/accounts/{accounts}/orders")
-        orders = (Order.from_dict(d) for d in res.get('Orders', []))
-        errors = (OrderError.from_dict(d) for d in res.get('Errors', []))
-        return orders, errors
-
-    async def aget_orders(self, accounts:Union[str, List[str]]):
-        """
-        Fetches today's orders and open orders for the given Accounts, 
-        sorted in descending order of time placed for open and time executed for closed.
-        Request valid for all account types.
-        """
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        accounts = ",".join(accounts)
-        return await self._asend_request(endpoint=f"brokerage/accounts/{accounts}/orders")
-    
-    def get_order_by_id(self, accounts:Union[str, List[str]], order_ids:Union[str, List[str]]):
-        """
-        Fetches today's orders and open orders for the given Accounts, 
-        filtered by given Order IDs, sorted in descending order of time placed for open and time executed for closed.
-        Request valid for all account types.
-        """
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        if isinstance(order_ids, str):
-            order_ids = [order_ids] 
-        accounts = ",".join(accounts)
-        order_ids= ",".join(order_ids)
-        return self._send_request(f"brokerage/accounts/{accounts}/orders/{order_ids}")
-    
-    async def aget_order_by_id(self, accounts:Union[str, List[str]], order_ids:Union[str, List[str]]):
-        """
-        Asynchronously fetches today's orders and open orders for the given Accounts, 
-        filtered by given Order IDs, sorted in descending order of time placed for open and time executed for closed.
-        Request valid for all account types.
-        """
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        if isinstance(order_ids, str):
-            order_ids = [order_ids] 
-        accounts = ",".join(accounts)
-        order_ids= ",".join(order_ids)
-        return await self._asend_request(f"brokerage/accounts/{accounts}/orders/{order_ids}")
-
-    def get_positions(self, accounts: Union[str, List[str]], symbol: Optional[Union[str, List[str]]] = None):
-        """
-        Fetches positions for the given Accounts. Request valid for Cash, Margin, Futures, and DVP account types.
-
-        :param accounts: List of valid Account IDs for the authenticated user in comma-separated format.
-        :param symbol: Optional. List of valid symbols in comma-separated format. Supports wildcards for filtering.
-        """
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        accounts = ",".join(accounts)
-
-        params = {}
-        if symbol:
-            if isinstance(symbol, str):
-                symbol = [symbol]
-            params['symbol'] = ",".join(symbol)
-
-        return self._send_request(f"brokerage/accounts/{accounts}/positions", params=params)
-
-    async def aget_positions(self, accounts: Union[str, List[str]], symbol: Optional[Union[str, List[str]]] = None):
-        """
-        Asynchronously fetches positions for the given Accounts. Request valid for Cash, Margin, Futures, and DVP account types.
-
-        :param accounts: List of valid Account IDs for the authenticated user in comma-separated format.
-        :param symbol: Optional. List of valid symbols in comma-separated format. Supports wildcards for filtering.
-        """
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        accounts = ",".join(accounts)
-
-        params = {}
-        if symbol:
-            if isinstance(symbol, str):
-                symbol = [symbol]
-            params['symbol'] = ",".join(symbol)
-
-        return await self._asend_request(f"brokerage/accounts/{accounts}/positions", params=params)
-
-    async def astream_positions(self, accounts: Union[str, List[str]], 
-                                 changes: bool = False,
-                                 data_handler: Optional[callable] = None, 
-                                 error_handler: Optional[callable] = None,
-                                 heartbeat_handler: Optional[callable] = None,
-                                 status_handler: Optional[callable] = None,
-                                 deleted_handler: Optional[callable] = None) -> Union[AsyncGenerator[dict, None], None]:
-        """
-        Streams positions for the given accounts asynchronously. Request valid for Cash, Margin, Futures, and DVP account types.
-        :param accounts: List of valid Account IDs for the authenticated user in comma-separated format.
-        :param changes: Boolean value to specify whether to stream updates as changes.
-        :param data_handler: Function to handle incoming position data.
-        :param error_handler: Function to handle errors.
-        :param heartbeat_handler: Function to handle heartbeat messages.
-        :param status_handler: Function to handle stream status messages.
-        :param deleted_handler: Function to handle deleted messages.
-        :return: An asynchronous generator yielding parsed JSON data from the stream, the data can be one of the following:
-            - "Heartbeat": Heartbeat message indicating the stream is alive.
-            - "Error": Error message indicating an issue with the stream.
-            - "StreamStatus": Status message indicating the current state of the stream.
-            - "Deleted": Message indicating that a position has been deleted.
-            - Position data: Actual position data for the specified accounts.
-        """
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        accounts = ",".join(accounts)
-
-        params = {"changes": str(changes).lower()}
-
-        data_generator = self._astream_request(endpoint=f"brokerage/stream/accounts/{accounts}/positions", params=params)
-        if not data_handler:
-            return data_generator
-        async for data in self._astream_request(endpoint=f"brokerage/stream/accounts/{accounts}/positions", params=params):
-            if data:
-                if "Heartbeat" in data:
-                    heartbeat_handler(data)
-                elif "Error" in data:
-                    error_handler(data)
-                elif "StreamStatus" in data:
-                    status_handler(data)
-                elif "Deleted" in data:
-                    deleted_handler(data)
-
-                else:
-                    data_handler(data)
-            else:
-                error_handler({"Error": "InvalidData",
-                               "Message": "Received empty data from the stream."})
-
-    def stream_positions(self, accounts: Union[str, List[str]], 
-                         changes: bool = False,
-                         data_handler=print, 
-                         error_handler=print, 
-                         heartbeat_handler=lambda x: None,
-                         status_handler=print,
-                         deleted_handler=print):
-        """
-        Streams positions for the given accounts synchronously. Request valid for Cash, Margin, Futures, and DVP account types.
-
-        :param accounts: List of valid Account IDs for the authenticated user in comma-separated format.
-        :param changes: Boolean value to specify whether to stream updates as changes.
-        :param data_handler: Function to handle incoming position data.
-        :param error_handler: Function to handle errors.
-        :param heartbeat_handler: Function to handle heartbeat messages.
-        :param status_handler: Function to handle stream status messages.
-        :param deleted_handler: Function to handle deleted messages.
-        """
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        accounts = ",".join(accounts)
-
-        params = {"changes": str(changes).lower()}
-
-        for data in self._stream_request(endpoint=f"brokerage/stream/accounts/{accounts}/positions", params=params):
-            if data:
-                if "Heartbeat" in data:
-                    heartbeat_handler(data)
-                elif "Error" in data:
-                    error_handler(data)
-                elif "StreamStatus" in data:
-                    status_handler(data)
-                elif "Deleted" in data:
-                    deleted_handler(data)
-                else:
-                    data_handler(data)
-            else:
-                error_handler({"Error": "InvalidData",
-                               "Message": "Received empty data from the stream."})
-
-    async def astream_orders(self, accounts: Union[str, List[str]], 
-                            data_handler=print, 
-                            error_handler=print, 
-                            heartbeat_handler=lambda x: None,
-                            status_handler=print):
-        """
-        Streams orders for the given accounts. Request valid for Cash, Margin, Futures, and DVP account types.
-
-        :param accounts: List of valid Account IDs for the authenticated user.
-        :param data_handler: Function to handle incoming order data.
-        :param error_handler: Function to handle errors.
-        :param heartbeat_handler: Function to handle heartbeat messages.
-        :param status_handler: Function to handle stream status messages.
-        """
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        accounts = ",".join(accounts)
-
-        async for data in self._astream_request(endpoint=f"brokerage/stream/accounts/{accounts}/orders"):
-            if data:
+Args:
+    symbols: List of valid symbols in comma separated format; for example `\"MSFT,BTCUSD\"`. No more than 100 symbols per request."""
+        url = f"{self.base_url}/v3/marketdata/stream/quotes/{symbols}"
+        async with self.client.stream('GET', url) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line or not line.strip():
+                    continue
                 try:
-                    if "Heartbeat" in data:
-                        heartbeat_handler(data)
-                    elif "Error" in data:
-                        error_handler(data)
-                    elif "StreamStatus" in data:
-                        status_handler(data)
-                    else:
-                        data_handler(data)
-                except json.JSONDecodeError:
-                    error_handler({"Error": "InvalidJSON",
-                                   "Message": f"The received data is not a valid JSON: \"{data}\""})
-
-    async def astream_orders_by_id(self, accounts: Union[str, List[str]], order_ids: Union[str, List[str]], 
-                                  data_handler=print, 
-                                  error_handler=print, 
-                                  heartbeat_handler=lambda x: None,
-                                  status_handler=print):
-        """
-        Streams orders for the given accounts and order IDs. Request valid for Cash, Margin, Futures, and DVP account types.
-
-        :param accounts: List of valid Account IDs for the authenticated user in comma-separated format.
-        :param order_ids: List of valid Order IDs for the account IDs in comma-separated format.
-        :param data_handler: Function to handle incoming order data.
-        :param error_handler: Function to handle errors.
-        :param heartbeat_handler: Function to handle heartbeat messages.
-        :param status_handler: Function to handle stream status messages.
-        """
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        if isinstance(order_ids, str):
-            order_ids = [order_ids]
-        accounts = ",".join(accounts)
-        order_ids = ",".join(order_ids)
-
-        async for data in self._astream_request(endpoint=f"brokerage/stream/accounts/{accounts}/orders/{order_ids}"):
-            if data:
+                    obj = json.loads(line)
+                except Exception:
+                    # skip malformed lines
+                    continue
                 try:
-                    if "Heartbeat" in data:
-                        heartbeat_handler(data)
-                    elif "Error" in data:
-                        error_handler(data)
-                    elif "StreamStatus" in data:
-                        status_handler(data)
-                    else:
-                        data_handler(data)
-                except json.JSONDecodeError:
-                    error_handler({"Error": "InvalidJSON",
-                                   "Message": f"The received data is not a valid JSON: \"{data}\""})
-
-    def stream_orders(self, accounts: Union[str, List[str]], 
-                      data_handler=print, 
-                      error_handler=print, 
-                      heartbeat_handler=lambda x: None,
-                      status_handler=print):
+                    yield Heartbeat1.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    yield QuoteStream.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    yield StreamErrorResponse.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                # fallback: yield raw dict
+                yield obj
+    
+    async def stream_market_depth_quotes(self, symbol: str, maxlevels: Optional[int] = 20) -> AsyncGenerator[Union[Heartbeat2, MarketDepthQuote, StreamErrorResponse], None]:
         """
-        Streams orders for the given accounts synchronously. Request valid for Cash, Margin, Futures, and DVP account types.
+        Stream Market Depth Quotes
 
-        :param accounts: List of valid Account IDs for the authenticated user in comma-separated format.
-        :param data_handler: Function to handle incoming order data.
-        :param error_handler: Function to handle errors.
-        :param heartbeat_handler: Function to handle heartbeat messages.
-        :param status_handler: Function to handle stream status messages.
+        Args:
+            symbol: A valid symbol for the security.
+            maxlevels: The maximum number of market depth levels to return. Must be a positive integer. If omitted it defaults to 20.
         """
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        accounts = ",".join(accounts)
-
-        for data in self._stream_request(endpoint=f"brokerage/stream/accounts/{accounts}/orders"):
-            if "Heartbeat" in data:
-                heartbeat_handler(data)
-            elif "Error" in data:
-                error_handler(data)
-            elif "StreamStatus" in data:
-                status_handler(data)
-            else:
-                data_handler(data)
-
-    def stream_orders_by_id(self, accounts: Union[str, List[str]], order_ids: Union[str, List[str]], 
-                            data_handler=print, 
-                            error_handler=print, 
-                            heartbeat_handler=lambda x: None,
-                            status_handler=print):
+        url = f"{self.base_url}/v3/marketdata/stream/marketdepth/quotes/{symbol}"
+        async with self.client.stream('GET', url, params={k: v for k, v in {'maxlevels': maxlevels}.items() if v is not None}) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line or not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    # skip malformed lines
+                    continue
+                try:
+                    yield Heartbeat2.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    yield MarketDepthQuote.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    yield StreamErrorResponse.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                # fallback: yield raw dict
+                yield obj
+    
+    async def stream_market_depth_aggregates(self, symbol: str, maxlevels: Optional[int] = 20) -> AsyncGenerator[Union[Heartbeat2, MarketDepthAggregate, StreamErrorResponse], None]:
         """
-        Streams orders for the given accounts and order IDs synchronously. Request valid for Cash, Margin, Futures, and DVP account types.
+        Stream Market Depth Aggregates
 
-        :param accounts: List of valid Account IDs for the authenticated user in comma-separated format.
-        :param order_ids: List of valid Order IDs for the account IDs in comma-separated format.
-        :param data_handler: Function to handle incoming order data.
-        :param error_handler: Function to handle errors.
-        :param heartbeat_handler: Function to handle heartbeat messages.
+        Args:
+            symbol: A valid symbol for the security.
+        Args:
+            maxlevels: The maximum number of market depth levels to return. Must be a positive integer. If omitted it defaults to 20.
         """
-        if isinstance(accounts, str):
-            accounts = [accounts]
-        if isinstance(order_ids, str):
-            order_ids = [order_ids]
-        accounts = ",".join(accounts)
-        order_ids = ",".join(order_ids)
-
-        for data in self._stream_request(endpoint=f"brokerage/stream/accounts/{accounts}/orders/{order_ids}"):
-            if "Heartbeat" in data:
-                heartbeat_handler(data)
-            elif "Error" in data:
-                error_handler(data)
-            elif "StreamStatus" in data:
-                status_handler(data)
-            else:
-                data_handler(data)
-
-    ### Order execution services ###
-
-    def place_order(self, order: OrderRequest):
+        url = f"{self.base_url}/v3/marketdata/stream/marketdepth/aggregates/{symbol}"
+        async with self.client.stream('GET', url, params={k: v for k, v in {'maxlevels': maxlevels}.items() if v is not None}) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line or not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    # skip malformed lines
+                    continue
+                try:
+                    yield Heartbeat2.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    yield MarketDepthAggregate.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    yield StreamErrorResponse.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                # fallback: yield raw dict
+                yield obj
+    
+    async def stream_orders(self, accounts: str) -> AsyncGenerator[Union[Heartbeat, Order, StreamOrderErrorResponse, StreamStatus], None]:
         """
-        Places a new brokerage order.
+        Stream Orders
 
-        :param order: An OrderRequest object representing the order to be placed.
-        :return: Response from the TradeStation API.
+        Args:
+            accounts: List of valid Account IDs for the authenticated user in comma separated format; for example `\"61999124,68910124\"`. 1 to 25 Account IDs can be specified, comma separated.
         """
-        payload = order.to_dict()
-        return self._send_request(method="POST", endpoint="orderexecution/orders", payload=payload)
-
-    async def aplace_order(self, order: OrderRequest):
+        url = f"{self.base_url}/v3/brokerage/stream/accounts/{accounts}/orders"
+        async with self.client.stream('GET', url) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line or not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    # skip malformed lines
+                    continue
+                yield TypeAdapter(Union[Order, Heartbeat, StreamOrderErrorResponse, StreamStatus]).validate_python(obj)
+    
+    async def stream_orders_by_order_id(self, accounts: str, orders_ids: str) -> AsyncGenerator[Union[Heartbeat, Order, StreamOrderByOrderIdErrorResponse, StreamStatus], None]:
         """
-        Asynchronously places a new brokerage order.
+        Stream Orders by Order Id
 
-        :param order: An OrderRequest object representing the order to be placed.
-        :return: Response from the TradeStation API.
+        Args:
+            accounts: List of valid Account IDs for the authenticated user in comma separated format; for example `\"61999124,68910124\"`. 1 to 25 account IDs can be specified, comma separated.
+            orders_ids: List of valid Order IDs for the account IDs in comma separated format; for example `\"812767578,812941051\"`. 1 to 50 order IDs can be specified, comma separated.
         """
-        payload = order.to_dict()
-        return await self._asend_request(method="POST", endpoint="orderexecution/orders", payload=payload)
+        url = f"{self.base_url}/v3/brokerage/stream/accounts/{accounts}/orders/{orders_ids}"
+        async with self.client.stream('GET', url) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line or not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    # skip malformed lines
+                    continue
+                try:
+                    yield Heartbeat3.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    yield Order1.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    yield StreamOrderByOrderIdErrorResponse.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    yield StreamStatus.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                # fallback: yield raw dict
+                yield obj
+    
+    async def stream_positions(self, accounts: str, changes: Optional[bool] = False) -> AsyncGenerator[Union[Heartbeat, Position, StreamPositionsErrorResponse, StreamStatus], None]:
+        """Stream Positions
 
-    def place_group_order(self, group_type: Literal["BRK", "OCO", "NORMAL"], orders: List[OrderRequest]):
-        """
-        Places a group order (OCO, BRK, or NORMAL).
-
-        :param group_type: The group order type. Valid values are: BRK, OCO, and NORMAL.
-        :param orders: List of OrderRequest objects representing the orders in the group.
-        :return: Response from the TradeStation API.
-        """
-        payload = {
-            "Type": group_type,
-            "Orders": [order.to_dict() for order in orders]
-        }
-        return self._send_request(method="POST", endpoint="orderexecution/ordergroups", payload=payload)
-
-    async def aplace_group_order(self, group_type: Literal["BRK", "OCO", "NORMAL"], orders: List[OrderRequest]):
-        """
-        Asynchronously places a group order (OCO, BRK, or NORMAL).
-
-        :param group_type: The group order type. Valid values are: BRK, OCO, and NORMAL.
-        :param orders: List of OrderRequest objects representing the orders in the group.
-        :return: Response from the TradeStation API.
-        """
-        payload = {
-            "Type": group_type,
-            "Orders": [order.to_dict() for order in orders]
-        }
-        return await self._asend_request(method="POST", endpoint="orderexecution/ordergroups", payload=payload)
-
-    def confirm_order(self, order: OrderRequest):
-        """
-        Confirms an order and returns estimated cost and commission information.
-
-        :param order: An OrderRequest object representing the order to be confirmed.
-        :return: Response from the TradeStation API.
-        """
-        payload = order.to_dict()
-        return self._send_request(method="POST", endpoint="orderexecution/orderconfirm", payload=payload)
-
-    async def aconfirm_order(self, order: OrderRequest):
-        """
-        Asynchronously confirms an order and returns estimated cost and commission information.
-
-        :param order: An OrderRequest object representing the order to be confirmed.
-        :return: Response from the TradeStation API.
-        """
-        payload = order.to_dict()
-        return await self._asend_request(method="POST", endpoint="orderexecution/orderconfirm", payload=payload)
-
-    def confirm_group_order(self, group_type: Literal["BRK", "OCO", "NORMAL"], orders: List[OrderRequest]):
-        """
-        Confirms a group order and returns estimated cost and commission information.
-
-        :param group_type: The group order type. Valid values are: BRK, OCO, and NORMAL.
-        :param orders: List of OrderRequest objects representing the orders in the group.
-        :return: Response from the TradeStation API.
-        """
-        payload = {
-            "Type": group_type,
-            "Orders": [order.to_dict() for order in orders]
-        }
-        return self._send_request(method="POST", endpoint="orderexecution/ordergroupconfirm", payload=payload)
-
-    async def aconfirm_group_order(self, group_type: Literal["BRK", "OCO", "NORMAL"], orders: List[OrderRequest]):
-        """
-        Asynchronously confirms a group order and returns estimated cost and commission information.
-
-        :param group_type: The group order type. Valid values are: BRK, OCO, and NORMAL.
-        :param orders: List of OrderRequest objects representing the orders in the group.
-        :return: Response from the TradeStation API.
-        """
-        payload = {
-            "Type": group_type,
-            "Orders": [order.to_dict() for order in orders]
-        }
-        return await self._asend_request(method="POST", endpoint="orderexecution/ordergroupconfirm", payload=payload)
-
-    def replace_order(self, order_id: str, quantity: Optional[str] = None, limit_price: Optional[str] = None,
-                      stop_price: Optional[str] = None, order_type: Optional[Literal["Market"]] = None,
-                      show_only_quantity: Optional[str] = None, trailing_stop: Optional[TrailingStop] = None,
-                      market_activation_clear_all: Optional[bool] = None,
-                      market_activation_rules: Optional[List[dict]] = None, time_activation_clear_all: Optional[bool] = None,
-                      time_activation_rules: Optional[List[datetime]] = None):
-        """
-        Replaces an active order with a modified version of that order.
-
-        :param order_id: The ID of the order to replace.
-        :param quantity: The new quantity for the order.
-        :param limit_price: The new limit price for the order.
-        :param stop_price: The new stop price for the order.
-        :param order_type: The new order type. Can only be updated to "Market".
-        :param show_only_quantity: Hides the true number of shares intended to be bought or sold.
-        :param trailing_stop: Trailing stop offset.
-        :param market_activation_clear_all: If True, removes all market activation rules.
-        :param market_activation_rules: List of market activation rules.
-        :param time_activation_clear_all: If True, removes all time activation rules.
-        :param time_activation_rules: List of datetime objects for time activation rules.
-        :return: Response from the TradeStation API.
-        """
-        payload = {}
-        if quantity:
-            payload["Quantity"] = quantity
-        if limit_price:
-            payload["LimitPrice"] = limit_price
-        if stop_price:
-            payload["StopPrice"] = stop_price
-        if order_type:
-            payload["OrderType"] = order_type
-
-        advanced_options = {}
-        if show_only_quantity:
-            advanced_options["ShowOnlyQuantity"] = show_only_quantity
-        if trailing_stop:
-            advanced_options["TrailingStop"] = trailing_stop.to_dict()
-        if market_activation_clear_all is not None or market_activation_rules:
-            advanced_options["MarketActivationRules"] = {}
-            if market_activation_clear_all is not None:
-                advanced_options["MarketActivationRules"]["ClearAll"] = market_activation_clear_all
-            if market_activation_rules:
-                advanced_options["MarketActivationRules"]["Rules"] = market_activation_rules
-        if time_activation_clear_all is not None or time_activation_rules:
-            advanced_options["TimeActivationRules"] = {}
-            if time_activation_clear_all is not None:
-                advanced_options["TimeActivationRules"]["ClearAll"] = time_activation_clear_all
-            if time_activation_rules:
-                advanced_options["TimeActivationRules"]["Rules"] = [
-                    {"TimeUtc": rule.replace(microsecond=0).astimezone(timezone.utc).isoformat()} for rule in time_activation_rules
-                ]
-
-        if advanced_options:
-            payload["AdvancedOptions"] = advanced_options
-
-        return self._send_request(method="PUT", endpoint=f"orderexecution/orders/{order_id}", payload=payload)
-
-    async def areplace_order(self, order_id: str, quantity: Optional[str] = None, limit_price: Optional[str] = None,
-                             stop_price: Optional[str] = None, order_type: Optional[Literal["Market"]] = None,
-                             show_only_quantity: Optional[str] = None, trailing_stop: Optional[TrailingStop] = None,
-                             market_activation_clear_all: Optional[bool] = None,
-                             market_activation_rules: Optional[List[dict]] = None, time_activation_clear_all: Optional[bool] = None,
-                             time_activation_rules: Optional[List[datetime]] = None):
-        """
-        Asynchronously replaces an active order with a modified version of that order.
-
-        :param order_id: The ID of the order to replace.
-        :param quantity: The new quantity for the order.
-        :param limit_price: The new limit price for the order.
-        :param stop_price: The new stop price for the order.
-        :param order_type: The new order type. Can only be updated to "Market".
-        :param show_only_quantity: Hides the true number of shares intended to be bought or sold.
-        :param trailing_stop: Trailing stop offset.
-        :param market_activation_clear_all: If True, removes all market activation rules.
-        :param market_activation_rules: List of market activation rules.
-        :param time_activation_clear_all: If True, removes all time activation rules.
-        :param time_activation_rules: List of datetime objects for time activation rules.
-        :return: Response from the TradeStation API.
-        """
-        payload = {}
-        if quantity:
-            payload["Quantity"] = quantity
-        if limit_price:
-            payload["LimitPrice"] = limit_price
-        if stop_price:
-            payload["StopPrice"] = stop_price
-        if order_type:
-            payload["OrderType"] = order_type
-
-        advanced_options = {}
-        if show_only_quantity:
-            advanced_options["ShowOnlyQuantity"] = show_only_quantity
-        if trailing_stop:
-            advanced_options["TrailingStop"] = trailing_stop.to_dict()
-        if market_activation_clear_all is not None or market_activation_rules:
-            advanced_options["MarketActivationRules"] = {}
-            if market_activation_clear_all is not None:
-                advanced_options["MarketActivationRules"]["ClearAll"] = market_activation_clear_all
-            if market_activation_rules:
-                advanced_options["MarketActivationRules"]["Rules"] = market_activation_rules
-        if time_activation_clear_all is not None or time_activation_rules:
-            advanced_options["TimeActivationRules"] = {}
-            if time_activation_clear_all is not None:
-                advanced_options["TimeActivationRules"]["ClearAll"] = time_activation_clear_all
-            if time_activation_rules:
-                advanced_options["TimeActivationRules"]["Rules"] = [
-                    {"TimeUtc": rule.replace(microsecond=0).astimezone(timezone.utc).isoformat()} for rule in time_activation_rules
-                ]
-
-        if advanced_options:
-            payload["AdvancedOptions"] = advanced_options
-
-        return await self._asend_request(method="PUT", endpoint=f"orderexecution/orders/{order_id}", payload=payload)
-
-    def get_activation_triggers(self):
-        """
-        Retrieves the available activation triggers with their corresponding keys.
-
-        :return: Response from the TradeStation API.
-        """
-        return self._send_request(method="GET", endpoint="orderexecution/activationtriggers")
-
-    async def aget_activation_triggers(self):
-        """
-        Asynchronously retrieves the available activation triggers with their corresponding keys.
-
-        :return: Response from the TradeStation API.
-        """
-        return await self._asend_request(method="GET", endpoint="orderexecution/activationtriggers")
-
-    def get_routes(self):
-        """
-        Retrieves a list of valid routes that a client can specify when posting an order.
-
-        :return: Response from the TradeStation API.
-        """
-        return self._send_request(method="GET", endpoint="orderexecution/routes")
-
-    async def aget_routes(self):
-        """
-        Asynchronously retrieves a list of valid routes that a client can specify when posting an order.
-
-        :return: Response from the TradeStation API.
-        """
-        return await self._asend_request(method="GET", endpoint="orderexecution/routes")
+        Args:
+            accounts: List of valid Account IDs for the authenticated user in comma separated format; for example `\"61999124,68910124\"`. 1 to 25 Account IDs can be specified, comma separated.
+        Args:
+            changes: A boolean value that specifies whether or not position updates are streamed as changes. When a stream is first opened with `\"changes=true\"`, streaming positions will return the full snapshot first for all positions, and then any changes after that. When `\"changes=true\"`, the PositionID field is returned with each change, along with the fields that changed."""
+        url = f"{self.base_url}/v3/brokerage/stream/accounts/{accounts}/positions"
+        async with self.client.stream('GET', url, params={k: v for k, v in {'changes': changes}.items() if v is not None}) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line or not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    # skip malformed lines
+                    continue
+                try:
+                    yield Heartbeat3.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    yield Position.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    yield StreamPositionsErrorResponse.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                try:
+                    yield StreamStatus.from_dict(obj)
+                    continue
+                except Exception:
+                    pass
+                # fallback: yield raw dict
+                yield obj
