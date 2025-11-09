@@ -1,20 +1,83 @@
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tradestation"
+name = "tradestation-python"
 version = "0.1.0"
-description = "A Python wrapper for the TradeStation API"
-authors = [{ name="Yair Klein", email="yair@yedidia.net" }]
+description = "Python client for TradeStation API"
 readme = "README.md"
-license = { file="LICENSE" }
+authors = [
+    {name = "Yair Klein", email = "yair@yedidia.net"}
+]
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+keywords = ["tradestation", "trading", "api", "stocks", "options", "market-data"]
+requires-python = ">=3.8"
 dependencies = [
-    "httpx",
-    "aiohttp",
-    "pydantic"
+    "httpx>=0.24.0",
+    "pydantic>=2.0.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio"]
-docs = ["mkdocs", "mkdocs-material"]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.0.0",
+    "ruff>=0.0.250",
+]
+docs = [
+    "sphinx>=5.0.0",
+    "sphinx-rtd-theme>=1.2.0",
+    "sphinx-autodoc-typehints>=1.22.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yairkl/tradestation-python"
+Documentation = "https://github.com/yairkl/tradestation-python/docs"
+Repository = "https://github.com/yairkl/tradestation-python"
+"Bug Tracker" = "https://github.com/yairkl/tradestation-python/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tradestation = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v --cov=tradestation --cov-report=html --cov-report=term"
+
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310", "py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"

@@ -3,7 +3,7 @@ from typing import List, Any, Union, Literal, Optional
 from pydantic_core import core_schema
 from pydantic import BaseModel, TypeAdapter, Field, GetCoreSchemaHandler
 import httpx
-from datetime import datetime, time, date
+from datetime import datetime, time, date, timezone
 
 class SerializableModel(BaseModel):
     @classmethod

@@ -1,83 +1,74 @@
-# TradeStation Python Library
+# TradeStation Python Client
 
-This library provides an interface to interact with the TradeStation API, including OAuth authentication, market data retrieval, and order execution.
+A comprehensive Python library for interacting with the TradeStation API.
 
 ## Features
 
-- OAuth 2.0 Authentication (synchronous and asynchronous)
-- Market data retrieval (bars, tick data, etc.)
-- Order management (place, confirm, replace, and stream orders)
-- Account and position management
+- 🔐 OAuth 2.0 authentication with automatic token refresh
+- 📊 Real-time market data streaming
+- 💼 Account management (balances, positions, orders)
+- 📈 Historical and real-time bar data
+- 🎯 Options chain and analytics
+- ⚡ Async/await support
+- 🛡️ Type hints and comprehensive error handling
 
 ## Installation
 
-Clone the repository and install the dependencies:
-
 ```bash
-git clone https://github.com/yairkl/TradeStation.git
-cd tradestation
-pip install 
+pip install tradestation-python
 ```
 
-## Usage
-
-### Authentication
-
-```python
-from tradestation import TradeStation
-
-# Initialize the TradeStation client
-client = TradeStation()
-
-# Fetch account details
-accounts = client.get_accounts()
-print(accounts)
-```
-
-### Place an Order
-
-```python
-from tradestation import Order, TradeStation
-
-# Initialize the TradeStation client
-client = TradeStation()
-
-# Create an order
-order = Order(
-    account_id="123456",
-    symbol="AAPL",
-    quantity="10",
-    order_type="Market",
-    trade_action="BUY",
-    time_in_force_duration="DAY"
-)
-
-# Place the order
-response = client.place_order(order)
-print(response)
-```
-
-### Asynchronous Usage
+## Quick Start
 
 ```python
 import asyncio
-from tradestation import TradeStation
+from tradestation import TradeStationClient
 
 async def main():
-    client = TradeStation()
-    accounts = await client.aget_accounts()
-    print(accounts)
+    async with TradeStationClient(is_demo=True) as client:
+        # Get accounts
+        accounts = await client.accounts.get_all()
+        
+        # Get quote
+        quote = await client.market_data.get_quotes("AAPL")
+        
+        # Stream real-time quotes
+        async for quote_update in client.stream.quotes("AAPL"):
+            print(quote_update)
 
 asyncio.run(main())
 ```
 
-## Environment Variables
+## Documentation
 
-Set the following environment variables for authentication:
+Full documentation available at: https://github.com/yairkl/tradestation-python/docs
 
-- `CLIENT_ID`
-- `CLIENT_SECRET`
+## Authentication
+
+Set environment variables:
+
+```bash
+export TRADESTATION_CLIENT_ID="your_client_id"
+export TRADESTATION_CLIENT_SECRET="your_client_secret"
+```
+
+Or pass directly:
+
+```python
+client = TradeStationClient(
+    client_id="your_client_id",
+    client_secret="your_client_secret"
+)
+```
+
+## Examples
+
+See the `examples/` directory for more usage examples.
+
+## Contributing
+
+Contributions welcome! Please read CONTRIBUTING.md first.
 
 ## License
 
-This library is licensed under the MIT License.
+MIT License - see LICENSE file for details.
