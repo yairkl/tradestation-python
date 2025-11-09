@@ -144,12 +144,15 @@ class TradeStationClient:
 
 
     async def suggestsymbols(self, text: str, dollar_top: Optional[int] = None, dollar_filter: Optional[str] = None) -> Union[Error, SymbolSuggestDefinition]:
-        """Suggest Symbols\n
+        """
+        Suggest Symbols
 
-Args:
-    dollar_top: The top number of results to return.
-    dollar_filter: An OData filter to apply to the results. Supports the `eq` and `neq` filter opeators. E.g. `AAP?$filter=Category%20neq%20%27Stock%27`.\nValid values are: `Category` (`Stock`, `Index`, `Future`, `Forex`), `Country` (E.g. `United States`, `GB`) `Currency` (E.g. `USD`, `AUD`),\nand `Exchange` (E.g. `NYSE`).
-    text: Symbol text for suggestion. Partial input of a symbol name, company name, or description."""
+        Args:
+            dollar_top: The top number of results to return.
+            dollar_filter: An OData filter to apply to the results. Supports the `eq` and `neq` filter opeators. E.g. `AAP?$filter=Category%20neq%20%27Stock%27`.\n
+            Valid values are: `Category` (`Stock`, `Index`, `Future`, `Forex`), `Country` (E.g. `United States`, `GB`) `Currency` (E.g. `USD`, `AUD`),\n
+            and `Exchange` (E.g. `NYSE`).
+            text: Symbol text for suggestion. Partial input of a symbol name, company name, or description."""
         url = f"{self.base_url}/v2/data/symbols/suggest/{text}"
         response = await self.client.get(url, params={k: v for k, v in {'$top': dollar_top, '$filter': dollar_filter}.items() if v is not None})
         response.raise_for_status()
@@ -171,23 +174,23 @@ Args:
             criteria: Criteria are represented as Key/value pairs (`&` separated):
                 `N`: Name of Symbol. (Optional)
                 `C`: Asset categories. (Optional) Possible values:
-                        - `Future` or `FU`
-                        - `FutureOption` or `FO`
-                        - `Stock` or `S` (Default)
-                        - `StockOption` or `SO` (If root is specified, default category)
-                        - `Index` or `IDX`
-                        - `CurrencyOption` or `CO`
-                        - `MutualFund` or `MF`
-                        - `MoneyMarketFund` or `MMF`
-                        - `IndexOption` or `IO`
-                        - `Bond` or `B`
-                        - `Forex` or `FX`
+                     - `Future` or `FU`
+                     - `FutureOption` or `FO`
+                     - `Stock` or `S` (Default)
+                     - `StockOption` or `SO` (If root is specified, default category)
+                     - `Index` or `IDX`
+                     - `CurrencyOption` or `CO`
+                     - `MutualFund` or `MF`
+                     - `MoneyMarketFund` or `MMF`
+                     - `IndexOption` or `IO`
+                     - `Bond` or `B`
+                     - `Forex` or `FX`\n
 
                 `Cnt`: Country where the symbol is traded in. (Optional) Possible values:
-                        - `ALL` if not specified (Default)
-                        - `US`
-                        - `DE`
-                        - `CA`
+                     - `ALL` if not specified (Default)
+                     - `US`
+                     - `DE`
+                     - `CA`
             #### For Equities Lookups:
                  
                 `N`: partial/full symbol name, will return all symbols that contain the provided name value
@@ -198,7 +201,43 @@ Args:
                     - `true`
                     - `false` (Default)
                     
-                `Cnt`: Country where the symbol is traded in. (Optional) Possible values:\n  - `ALL` if not specified (Default)\n  - `US`\n  - `DE`\n  - `CA`\n\n#### For Options Lookups:\n(Category=StockOption, IndexOption, FutureOption or CurrencyOption)\n\n`R`: Symbol root. Required field, the symbol the option is a derivative of, this search will not return options based on a partial root.\n\n`Stk`: Number of strikes prices above and below the underlying price\n  - Default value 3\n\n`Spl`: Strike price low\n\n`Sph`: Strike price high\n\n`Exd`: Number of expiration dates.\n  - Default value 3\n\n`Edl`: Expiration date low, ex: 01-05-2011\n\n`Edh`: Expiration date high, ex: 01-20-2011\n\n`OT`: Option type. Possible values:\n  - `Both` (Default)\n  - `Call`\n  - `Put`\n\n`FT`: Future type for FutureOptions. Possible values:\n  - `Electronic` (Default)\n  - `Pit`\n\n`ST`: Symbol type: Possible values:\n  - `Both`\n  - `Composite` (Default)\n  - `Regional`\n\n#### For Futures Lookups:\n(Category = Future)\n\n`Desc`: Description of symbol traded\n\n`R`: Symbol root future trades\n\n`FT`: Futures type. Possible values:\n  - `None`\n  - `PIT`\n  - `Electronic` (Default)\n  - `Combined`\n\n`Cur`: Currency. Possible values:\n  - `All`\n  - `USD` (Default)\n  - `AUD`\n  - `CAD`\n  - `CHF`\n  - `DKK`\n  - `EUR`\n  - `DBP`\n  - `HKD`\n  - `JPY`\n  - `NOK`\n  - `NZD`\n  - `SEK`\n  - `SGD`\n\n`Exp`: whether to include expired contracts\n  - `false` (Default)\n  - `true`\n\n`Cnt`: Country where the symbol is traded in. (Optional) Possible values:\n  - `ALL` if not specified (Default)\n  - `US`\n  - `DE`\n  - `CA`\n\n#### For Forex Lookups:\n\n`N`: partial/full symbol name. Use all or null for a list of all forex symbols\n\n`Desc`: Description\n\nNote:\n  - The exchange returned for all forex searches will be `FX`\n  - The country returned for all forex searches will be `FOREX`\n"""
+                `Cnt`: Country where the symbol is traded in. (Optional) Possible values:
+                    - `ALL` if not specified (Default)
+                    - `US`
+                    - `DE`
+                    - `CA`
+            #### For Options Lookups:
+                (Category=StockOption, IndexOption, FutureOption or CurrencyOption)
+                `R`: Symbol root. Required field, the symbol the option is a derivative of, this search will not return options based on a partial root.
+                
+                `Stk`: Number of strikes prices above and below the underlying price
+                     - Default value 3
+                    
+                `Spl`: Strike price low
+                
+                `Sph`: Strike price high
+                
+                `Exd`: Number of expiration dates.
+                    - Default value 3
+                    
+                `Edl`: Expiration date low, ex: 01-05-2011
+                
+                `Edh`: Expiration date high, ex: 01-20-2011
+                
+                `OT`: Option type. Possible values:\n  - `Both` (Default)
+                    - `Call`
+                    - `Put`
+                    
+                `FT`: Future type for FutureOptions. Possible values:
+                    - `Electronic` (Default)
+                    - `Pit`
+                `ST`: Symbol type: Possible values:
+                    - `Both`
+                    - `Composite` (Default)
+                    - `Regional`
+                    
+            #### For Futures Lookups:
+            (Category = Future)\n\n`Desc`: Description of symbol traded\n\n`R`: Symbol root future trades\n\n`FT`: Futures type. Possible values:\n  - `None`\n  - `PIT`\n  - `Electronic` (Default)\n  - `Combined`\n\n`Cur`: Currency. Possible values:\n  - `All`\n  - `USD` (Default)\n  - `AUD`\n  - `CAD`\n  - `CHF`\n  - `DKK`\n  - `EUR`\n  - `DBP`\n  - `HKD`\n  - `JPY`\n  - `NOK`\n  - `NZD`\n  - `SEK`\n  - `SGD`\n\n`Exp`: whether to include expired contracts\n  - `false` (Default)\n  - `true`\n\n`Cnt`: Country where the symbol is traded in. (Optional) Possible values:\n  - `ALL` if not specified (Default)\n  - `US`\n  - `DE`\n  - `CA`\n\n#### For Forex Lookups:\n\n`N`: partial/full symbol name. Use all or null for a list of all forex symbols\n\n`Desc`: Description\n\nNote:\n  - The exchange returned for all forex searches will be `FX`\n  - The country returned for all forex searches will be `FOREX`\n"""
         url = f"{self.base_url}/v2/data/symbols/search/{criteria}"
         response = await self.client.get(url, )
         response.raise_for_status()
@@ -774,8 +813,8 @@ Args:
     async def get_quote_change_stream(self, symbols: str) -> AsyncGenerator[Union[Heartbeat, QuoteStream, StreamErrorResponse], None]:
         """Stream Quotes
 
-Args:
-    symbols: List of valid symbols in comma separated format; for example `\"MSFT,BTCUSD\"`. No more than 100 symbols per request."""
+            Args:
+                symbols: List of valid symbols in comma separated format; for example `\"MSFT,BTCUSD\"`. No more than 100 symbols per request."""
         url = f"{self.base_url}/v3/marketdata/stream/quotes/{symbols}"
         async with self.client.stream('GET', url) as response:
             response.raise_for_status()
@@ -788,7 +827,7 @@ Args:
                     # skip malformed lines
                     continue
                 try:
-                    yield Heartbeat1.from_dict(obj)
+                    yield Heartbeat.from_dict(obj)
                     continue
                 except Exception:
                     pass
@@ -961,7 +1000,7 @@ Args:
                     # skip malformed lines
                     continue
                 try:
-                    yield Heartbeat3.from_dict(obj)
+                    yield Heartbeat.from_dict(obj)
                     continue
                 except Exception:
                     pass
