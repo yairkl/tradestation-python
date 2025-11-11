@@ -41,7 +41,7 @@ asyncio.run(main())
 
 ## Documentation
 
-Full documentation available at: https://github.com/yairkl/tradestation-python/docs
+Full documentation available at: [Docs](docs/index.md)
 
 ## Authentication
 
@@ -63,7 +63,7 @@ client = TradeStationClient(
 
 ## Examples
 
-See the `examples/` directory for more usage examples.
+See the [Examples](examples/) directory for more usage examples.
 
 ## Contributing
 
