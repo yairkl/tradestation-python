@@ -147,7 +147,12 @@ class TradeStationClient:
     
     async def close(self):
         """Close the HTTP client."""
-        await self.client.aclose()
+        print("Closing TradeStation client...")
+        try:
+            await self.client.aclose()
+        except RuntimeError as e:
+            if "Event loop is closed" not in str(e):
+                raise
     
     async def __aenter__(self):
         """Async context manager entry."""
@@ -164,7 +169,7 @@ class TradeStationClient:
         text: str,
         top: Optional[int] = None,
         filter_expr: Optional[str] = None
-    ) -> Union[Error, SymbolSuggestDefinition]:
+    ) -> Union[Error, List[SymbolSuggestDefinition]]:
         """
         Suggest symbols based on partial input.
         
@@ -184,11 +189,11 @@ class TradeStationClient:
         response = await self.client.get(url, params=params)
         
         if response.status_code == 200:
-            return SymbolSuggestDefinition.from_dict(response.json())
+            return SymbolSuggestDefinitions.model_validate(response.json()).root
         else:
             return Error.from_dict(response.json())
     
-    async def search_symbols(self, criteria: str) -> Union[Error, SymbolSearchDefinition]:
+    async def search_symbols(self, criteria: str) -> Union[Error, List[SymbolSearchDefinition]]:
         """
         Search for symbols using detailed criteria.
         
@@ -200,7 +205,7 @@ class TradeStationClient:
         response = await self.client.get(url)
         
         if response.status_code == 200:
-            return SymbolSearchDefinition.from_dict(response.json())
+            return SymbolSearchDefinitions.model_validate(response.json()).root
         else:
             return Error.from_dict(response.json())
     
@@ -378,7 +383,7 @@ class TradeStationClient:
         else:
             return ErrorResponse.from_dict(response.json())
     
-    async def confirm_order(self, order: OrderRequest) -> Union[ErrorResponse, List[OrderConfirmResponses]]:
+    async def confirm_order(self, order: OrderRequest) -> Union[ErrorResponse, List[OrderConfirmResponse]]:
         """
         Confirm order details without placing it.
         
@@ -390,7 +395,8 @@ class TradeStationClient:
         response = await self.client.post(url, json=order.to_dict())
         
         if response.status_code == 200:
-            return [OrderConfirmResponses.from_dict(item) for item in response.json()]
+            return OrderConfirmResponses.model_validate(response.json()).confirmations
+            # return [OrderConfirmResponse.from_dict(item) for item in response.json()]
         else:
             return ErrorResponse.from_dict(response.json())
     

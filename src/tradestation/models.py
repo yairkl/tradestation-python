@@ -1,11 +1,15 @@
 from enum import Enum
 from typing import List, Any, Union, Literal, Optional
 from pydantic_core import core_schema
-from pydantic import BaseModel, TypeAdapter, Field, GetCoreSchemaHandler
+from pydantic import BaseModel, RootModel, Field, GetCoreSchemaHandler, ConfigDict
 import httpx
 from datetime import datetime, time, date, timezone
 
 class SerializableModel(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,  #  allows using Python field names
+    )
+
     @classmethod
     def from_dict(cls, data: dict):
         return cls.model_validate(data, by_alias=True)
@@ -95,17 +99,17 @@ class DateUtc(date):
             value = value.replace(tzinfo=timezone.utc)
         return value.isoformat().replace("+00:00", "Z")
 
-class SymbolSuggestDefinitionItem(SerializableModel):
+class SymbolSuggestDefinition(SerializableModel):
     category: str = Field(..., alias="Category", description="The type of financial instrument that the symbol represents, such as a stock, index, or mutual fund.")
-    country: Literal["US", "DE", "CA"] = Field(..., alias="Country", description="The country of the exchange where the symbol is listed.")
+    country: Literal["US", "United States", "DE", "CA"] = Field(..., alias="Country", description="The country of the exchange where the symbol is listed.")
     currency: Literal["USD", "AUD", "CAD", "CHF", "DKK", "EUR", "DBP", "HKD", "JPY", "NOK", "NZD", "SEK", "SGD"] = Field(..., alias="Currency", description="Displays the type of base currency for the selected symbol.")
     description: str = Field(..., alias="Description", description="Displays the full name of the symbol.")
     display_type: float = Field(..., alias="DisplayType", description="Symbol's price display type based on the following list:\n\n* `0` \"Automatic\" => .00 (should be handled as 2 decimals)\n* `1` 0 Decimals => 1\n* `2` 1 Decimals => .1\n* `3` 2 Decimals => .01\n* `4` 3 Decimals => .001\n* `5` 4 Decimals => .0001\n* `6` 5 Decimals => .00001\n* `7` Simplest Fraction\n* `8` 1/2-Halves => .5\n* `9` 1/4-Fourths => .25\n* `10` 1/8-Eights => .125\n* `11` 1/16-Sixteenths => .0625\n* `12` 1/32-ThirtySeconds => .03125\n* `13` 1/64-SixtyFourths => .015625\n* `14` 1/128-OneTwentyEigths => .0078125\n* `15` 1/256-TwoFiftySixths => .003906250\n* `16` 10ths and Quarters => .025\n* `17` 32nds and Halves => .015625\n* `18` 32nds and Quarters => .0078125\n* `19` 32nds and Eights => .00390625\n* `20` 32nds and Tenths => .003125\n* `21` 64ths and Halves => .0078125\n* `22` 64ths and Tenths => .0015625\n* `23` 6 Decimals => .000001\n")
-    error: str = Field(..., alias="Error", description="Element that references error.")
+    error: Optional[str] = Field(..., alias="Error", description="Element that references error.")
     exchange: str = Field(..., alias="Exchange", description="Name of exchange where this symbol is traded in.")
     exchange_id: float = Field(..., alias="ExchangeID", description="A unique numerical identifier for the Exchange.")
     expiration_date: str = Field(..., alias="ExpirationDate", description="Displays the expiration date for a futures or options contract in UTC formatted time.")
-    expiration_type: str = Field(..., alias="ExpirationType", description="For options only. It indicates whether the option is a monthly, weekly, quarterly or end of month expiration.\n* W - Weekly\n* M - Monthly\n* Q - Quartely\n* E - End of the month\n* \"\" - The term not be identified\n")
+    expiration_type: Optional[str] = Field(None, alias="ExpirationType", description="For options only. It indicates whether the option is a monthly, weekly, quarterly or end of month expiration.\n* W - Weekly\n* M - Monthly\n* Q - Quartely\n* E - End of the month\n* \"\" - The term not be identified\n")
     future_type: str = Field(..., alias="FutureType", description="Displays the type of future contract the symbol represents.")
     min_move: float = Field(..., alias="MinMove", description="Multiplying factor using the display type to determine the minimum price increment the asset trades in. For options the MinMove may vary. If the MinMove is negative, then the MinMove is dependent on the price. The whole number portion of the min move is the threshold. The leftmost two digits to the right of the decimal (X.XXXX) indicate the min move beneath the threshold, and the rightmost two digits (X.XXXX) indicate the min move above the threshold.")
     name: str = Field(..., alias="Name", description="A unique series of letters assigned to a security for trading purposes.")
@@ -113,24 +117,27 @@ class SymbolSuggestDefinitionItem(SerializableModel):
     point_value: float = Field(..., alias="PointValue", description="Symbol`s point value.")
     root: str = Field(..., alias="Root", description="The Symbol root.")
     strike_price: float = Field(..., alias="StrikePrice", description="Displays strike price of an options contract; For Options symbols only.")
-SymbolSuggestDefinition = List[SymbolSuggestDefinitionItem]
+
+class SymbolSuggestDefinitions(RootModel[List[SymbolSuggestDefinition]]):
+    """List of suggested symbols based on partial input."""
+    pass
 
 class Error(SerializableModel):
     trace_id: Optional[str] = Field(None, alias="TraceId")
     status_code: Optional[int] = Field(None, alias="StatusCode")
     message: Optional[str] = Field(None, alias="Message")
 
-class SymbolSearchDefinitionItem(SerializableModel):
+class SymbolSearchDefinition(SerializableModel):
     category: str = Field(..., alias="Category", description="The type of financial instrument that the symbol represents, such as a stock, index, or mutual fund.")
-    country: Literal["US", "DE", "CA"] = Field(..., alias="Country", description="The country of the exchange where the symbol is listed.")
+    country: Literal["US", "United States", "DE", "CA"] = Field(..., alias="Country", description="The country of the exchange where the symbol is listed.")
     currency: Literal["USD", "AUD", "CAD", "CHF", "DKK", "EUR", "DBP", "HKD", "JPY", "NOK", "NZD", "SEK", "SGD"] = Field(..., alias="Currency", description="Displays the type of base currency for the selected symbol.")
     description: str = Field(..., alias="Description", description="Displays the full name of the symbol.")
     display_type: float = Field(..., alias="DisplayType", description="Symbol's price display type based on the following list:\n\n* `0` \"Automatic\" Not used\n* `1` 0 Decimals => 1\n* `2` 1 Decimals => .1\n* `3` 2 Decimals => .01\n* `4` 3 Decimals => .001\n* `5` 4 Decimals => .0001\n* `6` 5 Decimals => .00001\n* `7` Simplest Fraction\n* `8` 1/2-Halves => .5\n* `9` 1/4-Fourths => .25\n* `10` 1/8-Eights => .125\n* `11` 1/16-Sixteenths => .0625\n* `12` 1/32-ThirtySeconds => .03125\n* `13` 1/64-SixtyFourths => .015625\n* `14` 1/128-OneTwentyEigths => .0078125\n* `15` 1/256-TwoFiftySixths => .003906250\n* `16` 10ths and Quarters => .025\n* `17` 32nds and Halves => .015625\n* `18` 32nds and Quarters => .0078125\n* `19` 32nds and Eights => .00390625\n* `20` 32nds and Tenths => .003125\n* `21` 64ths and Halves => .0078125\n* `22` 64ths and Tenths => .0015625\n* `23` 6 Decimals => .000001\n")
-    error: str = Field(..., alias="Error", description="Element that references error.")
+    error: Optional[str] = Field(..., alias="Error", description="Element that references error.")
     exchange: str = Field(..., alias="Exchange", description="Name of exchange where this symbol is traded in.")
     exchange_id: float = Field(..., alias="ExchangeID", description="A unique numerical identifier for the Exchange.")
     expiration_date: str = Field(..., alias="ExpirationDate", description="Displays the expiration date for a futures or options contract in UTC formatted time.")
-    expiration_type: str = Field(..., alias="ExpirationType", description="For options only. It indicates whether the option is a monthly, weekly, quarterly or end of month expiration.\n* W - Weekly\n* M - Monthly\n* Q - Quartely\n* E - End of the month\n* \"\" - The term not be identified\n")
+    expiration_type: Optional[str] = Field(None, alias="ExpirationType", description="For options only. It indicates whether the option is a monthly, weekly, quarterly or end of month expiration.\n* W - Weekly\n* M - Monthly\n* Q - Quartely\n* E - End of the month\n* \"\" - The term not be identified\n")
     future_type: str = Field(..., alias="FutureType", description="Displays the type of future contract the symbol represents.")
     min_move: float = Field(..., alias="MinMove", description="Multiplying factor using the display type to determine the minimum price increment the asset trades in. For options the MinMove may vary. If the MinMove is negative, then the MinMove is dependent on the price. The whole number portion of the min move is the threshold. The leftmost two digits to the right of the decimal (X.XXXX) indicate the min move beneath the threshold, and the rightmost two digits (X.XXXX) indicate the min move above the threshold.")
     name: str = Field(..., alias="Name", description="A unique series of letters assigned to a security for trading purposes.")
@@ -139,7 +146,9 @@ class SymbolSearchDefinitionItem(SerializableModel):
     root: str = Field(..., alias="Root", description="The Symbol root.")
     strike_price: float = Field(..., alias="StrikePrice", description="Displays strike price of an options contract; For Options symbols only.")
     underlying: str = Field(..., alias="Underlying", description="The financial instrument on which an option contract is based or derived.")
-SymbolSearchDefinition = List[SymbolSearchDefinitionItem]
+class SymbolSearchDefinitions(RootModel[List[SymbolSearchDefinition]]):
+    """List of searched symbols based on detailed criteria."""
+    pass
 
 class StatusDefinition(SerializableModel):
     """Status value for Barcharts and Tickbars. Integer value represeting values through bit mappings"""
@@ -638,7 +647,7 @@ class OrderConfirmResponse(SerializableModel):
 
 class OrderConfirmResponses(SerializableModel):
     """A collection of OrderConfirmResponse objects."""
-    confirmations: Optional[List[OrderConfirmResponse]] = Field(None, alias="Confirmations")
+    confirmations: List[OrderConfirmResponse] = Field(None, alias="Confirmations")
 
 class GroupOrderRequest(SerializableModel):
     """The request for placing a group trade."""

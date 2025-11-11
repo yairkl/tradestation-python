@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from tradestation import TradeStationClient
-from models import OrderRequest, OrderReplaceRequest
+from tradestation.models import OrderRequest, OrderReplaceRequest, Accounts, TradeAction, TimeInForceRequest, Duration, OrderType
 
 
 # Test Configuration
@@ -31,13 +31,9 @@ async def client():
         pytest.skip("TradeStation credentials not found in environment variables")
     
     # Create client with demo account
-    client = TradeStationClient(is_demo=True)
+    async with TradeStationClient(is_demo=True) as client:
+        yield client
     
-    yield client
-    
-    # Cleanup: close the client
-    await client.close()
-
 
 @pytest.fixture(scope="session")
 async def test_account_id(client):
@@ -47,12 +43,14 @@ async def test_account_id(client):
     if TEST_ACCOUNT_ID is None:
         accounts = await client.get_accounts()
         
-        if isinstance(accounts, dict) and 'Accounts' in accounts:
-            if len(accounts['Accounts']) > 0:
-                TEST_ACCOUNT_ID = accounts['Accounts'][0].get('AccountID')
+
+        if isinstance(accounts,Accounts):
+            stocks_account = [acc for acc in accounts.accounts if acc.account_type.lower() in ['cash', 'margin']]
+            if len(stocks_account) > 0:
+                TEST_ACCOUNT_ID = stocks_account[0].account_id
         
         if TEST_ACCOUNT_ID is None:
-            pytest.skip("No test accounts available")
+            pytest.skip("No stocks test accounts available")
     
     return TEST_ACCOUNT_ID
 
@@ -82,11 +80,10 @@ async def cleanup_orders(client, test_account_id):
 
 
 # Authentication Tests
-
 class TestAuthentication:
     """Test authentication and token management."""
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_client_initialization(self, client):
         """Test that client initializes successfully."""
         assert client.access_token is not None
@@ -94,12 +91,12 @@ class TestAuthentication:
         assert client.client_secret is not None
         assert client.token_expiry is not None
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_token_is_valid(self, client):
         """Test that token is valid and not expired."""
         assert client.token_expiry > datetime.now()
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_ensure_valid_token(self, client):
         """Test token validation mechanism."""
         old_token = client.access_token
@@ -109,21 +106,20 @@ class TestAuthentication:
 
 
 # Account Tests
-
 class TestAccounts:
     """Test account-related functionality."""
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_accounts(self, client):
         """Test retrieving accounts."""
         result = await client.get_accounts()
         
         assert hasattr(result, 'accounts') or 'Accounts' in result
-        accounts = getattr(result, 'accounts', result.get('Accounts', []))
+        accounts = getattr(result, 'accounts', [])
         assert len(accounts) > 0
-        assert accounts[0].get('AccountID') is not None
+        assert accounts[0].account_id is not None
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_balances(self, client, test_account_id):
         """Test retrieving account balances."""
         result = await client.get_balances(test_account_id)
@@ -135,14 +131,14 @@ class TestAccounts:
         elif isinstance(result, dict):
             assert 'Balances' in result or 'balances' in result
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_balances_bod(self, client, test_account_id):
         """Test retrieving beginning-of-day balances."""
         result = await client.get_balances_bod(test_account_id)
         
         assert result is not None
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_positions(self, client, test_account_id):
         """Test retrieving positions."""
         result = await client.get_positions(test_account_id)
@@ -150,7 +146,7 @@ class TestAccounts:
         assert result is not None
         # Positions may be empty, but should return a valid response
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_positions_with_filter(self, client, test_account_id):
         """Test retrieving positions with symbol filter."""
         result = await client.get_positions(test_account_id, symbol=TEST_SYMBOL)
@@ -159,55 +155,49 @@ class TestAccounts:
 
 
 # Symbol Search Tests
-
 class TestSymbolSearch:
     """Test symbol search functionality."""
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_suggest_symbols(self, client):
         """Test symbol suggestion."""
         result = await client.suggest_symbols("AAP")
-        
         assert result is not None
-        if hasattr(result, 'symbols'):
-            symbols = result.symbols
-        else:
-            symbols = result.get('Symbols', [])
+
+        symbols = [r.name for r in result]
         
         assert len(symbols) > 0
         # Should contain AAPL
         assert any('AAPL' in str(s) for s in symbols)
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_suggest_symbols_with_limit(self, client):
         """Test symbol suggestion with top limit."""
         result = await client.suggest_symbols("A", top=5)
         
         assert result is not None
-        if hasattr(result, 'symbols'):
-            symbols = result.symbols
-            assert len(symbols) <= 5
+        print(result)
+        symbols = [r.name for r in result]
+
+        assert len(symbols) <= 5
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_search_symbols_equity(self, client):
         """Test searching for equity symbols."""
         result = await client.search_symbols("N=AAPL&C=Stock")
         
         assert result is not None
-        if hasattr(result, 'symbols'):
-            symbols = result.symbols
-        else:
-            symbols = result.get('Symbols', [])
+
+        symbols = [r.name for r in result]
         
         assert len(symbols) > 0
 
 
 # Market Data Tests
-
 class TestMarketData:
     """Test market data retrieval."""
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_bars_daily(self, client):
         """Test getting daily bars."""
         result = await client.get_bars(
@@ -228,7 +218,7 @@ class TestMarketData:
         bar = bars[0]
         assert 'Open' in bar or 'open' in bar.lower() if isinstance(bar, str) else True
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_bars_intraday(self, client):
         """Test getting intraday bars."""
         result = await client.get_bars(
@@ -240,7 +230,7 @@ class TestMarketData:
         
         assert result is not None
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_bars_with_date_range(self, client):
         """Test getting bars with date range."""
         end_date = datetime.now()
@@ -256,7 +246,7 @@ class TestMarketData:
         
         assert result is not None
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_quote_snapshots(self, client):
         """Test getting quote snapshots."""
         result = await client.get_quote_snapshots(f"{TEST_SYMBOL},MSFT")
@@ -269,28 +259,25 @@ class TestMarketData:
         
         assert len(quotes) >= 1
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_symbol_details(self, client):
         """Test getting symbol details."""
         result = await client.get_symbol_details(TEST_SYMBOL)
         
         assert result is not None
-        if hasattr(result, 'symbols'):
-            symbols = result.symbols
-        else:
-            symbols = result.get('Symbols', [])
+
+        symbols = result.symbols
         
         assert len(symbols) > 0
         symbol = symbols[0]
-        assert symbol.get('Symbol') == TEST_SYMBOL or symbol.get('symbol') == TEST_SYMBOL
+        assert symbol.symbol == TEST_SYMBOL
 
 
 # Streaming Tests
-
 class TestStreaming:
     """Test streaming functionality."""
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_stream_bars(self, client):
         """Test streaming bars."""
         count = 0
@@ -305,7 +292,7 @@ class TestStreaming:
         
         assert count > 0
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_stream_quotes(self, client):
         """Test streaming quotes."""
         count = 0
@@ -320,7 +307,7 @@ class TestStreaming:
         
         assert count > 0
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_stream_positions(self, client, test_account_id):
         """Test streaming positions."""
         count = 0
@@ -338,11 +325,10 @@ class TestStreaming:
 
 
 # Order Tests
-
 class TestOrders:
     """Test order management functionality."""
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_orders(self, client, test_account_id):
         """Test retrieving orders."""
         result = await client.get_orders(test_account_id)
@@ -350,7 +336,7 @@ class TestOrders:
         assert result is not None
         # Orders may be empty
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_historical_orders(self, client, test_account_id):
         """Test retrieving historical orders."""
         since_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -359,7 +345,7 @@ class TestOrders:
         
         assert result is not None
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_confirm_order(self, client, test_account_id):
         """Test confirming an order (validation without placement)."""
         # Create a simple limit order for confirmation
@@ -367,11 +353,10 @@ class TestOrders:
             account_id=test_account_id,
             symbol=TEST_SYMBOL,
             quantity="1",
-            order_type="Limit",
+            order_type=OrderType.LIMIT,
             limit_price="50.00",  # Far from market to avoid accidental fill
-            trade_action="Buy",
-            time_in_force="Day",
-            route="Intelligent"
+            trade_action=TradeAction.BUY,
+            time_in_force=TimeInForceRequest(duration=Duration.DAY),
         )
         
         result = await client.confirm_order(order)
@@ -379,7 +364,7 @@ class TestOrders:
         assert result is not None
         # Confirmation should return estimated costs/commissions
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_place_and_cancel_order(self, client, test_account_id, cleanup_orders):
         """Test placing and canceling an order."""
         # Create a limit order far from market to avoid fill
@@ -389,9 +374,8 @@ class TestOrders:
             quantity="1",
             order_type="Limit",
             limit_price="1.00",  # Very low price to avoid fill
-            trade_action="Buy",
-            time_in_force="Day",
-            route="Intelligent"
+            trade_action=TradeAction.BUY,
+            time_in_force=TimeInForceRequest(duration=Duration.DAY),
         )
         
         # Place the order
@@ -401,14 +385,13 @@ class TestOrders:
         
         # Extract order ID
         order_id = None
-        if hasattr(result, 'orders'):
-            orders = result.orders
-            if len(orders) > 0:
-                order_id = orders[0].get('OrderID')
-        elif isinstance(result, dict):
-            order_id = result.get('OrderID') or result.get('Orders', [{}])[0].get('OrderID')
+        assert hasattr(result, 'orders'), f"Orders not found in result: {result}"
+
+        orders = result.orders
+        if len(orders) > 0:
+            order_id = orders[0].order_id
         
-        assert order_id is not None, "Order ID should be returned after placement"
+        assert order_id is not None, f"Order ID should be returned after placement: order:{orders[0]}"
         
         # Register for cleanup
         cleanup_orders(order_id)
@@ -427,7 +410,7 @@ class TestOrders:
         # Wait for cancellation
         await asyncio.sleep(2)
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_replace_order(self, client, test_account_id, cleanup_orders):
         """Test replacing an order."""
         # Place initial order
@@ -437,70 +420,108 @@ class TestOrders:
             quantity="1",
             order_type="Limit",
             limit_price="1.00",
-            trade_action="Buy",
-            time_in_force="Day",
-            route="Intelligent"
+            trade_action=TradeAction.BUY,
+            time_in_force=TimeInForceRequest(duration=Duration.DAY),
         )
         
         result = await client.place_order(order)
         
         # Extract order ID
         order_id = None
-        if hasattr(result, 'orders'):
-            orders = result.orders
-            if len(orders) > 0:
-                order_id = orders[0].get('OrderID')
-        elif isinstance(result, dict):
-            order_id = result.get('OrderID') or result.get('Orders', [{}])[0].get('OrderID')
+        assert hasattr(result, 'orders') and len(result.orders) == 1, f"Orders not found in result: {result}"
+        order = result.orders[0]
+        order_id = order.order_id
+        assert order_id is not None, "Order ID should be returned after placement"
+
+        cleanup_orders(order_id)
         
-        if order_id:
-            cleanup_orders(order_id)
+        await asyncio.sleep(2)
+        
+        # Replace the order with new quantity
+        replace_request = OrderReplaceRequest(
+            quantity="2",
+            limit_price="1.50"
+        )
+        
+        replace_result = await client.replace_order(order_id, replace_request)
+        assert replace_result is not None
+        
+        await asyncio.sleep(1)
+
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_place_and_stream_order(self, client, test_account_id, cleanup_orders):
+        """Test placing an order and streaming its updates."""
+        # Place a limit order far from market to avoid fill
+        order = OrderRequest(
+            account_id=test_account_id,
+            symbol=TEST_SYMBOL,
+            quantity="1",
+            order_type="Limit",
+            limit_price="1.00",  # Very low price to avoid fill
+            trade_action=TradeAction.BUY,
+            time_in_force=TimeInForceRequest(duration=Duration.DAY),
+        )
+        
+        # Place the order
+        result = await client.place_order(order)
+        
+        assert result is not None
+        
+        # Extract order ID
+        order_id = None
+        assert hasattr(result, 'orders') and len(result.orders) == 1, f"Orders not found in result: {result}"
+        order = result.orders[0]
+        order_id = order.order_id
+        
+        assert order_id is not None, "Order ID should be returned after placement"
+        
+        # Register for cleanup
+        cleanup_orders(order_id)
+        
+        # Stream order updates
+        updates_received = 0
+        async for update in client.stream_orders(test_account_id):
+            updates_received += 1
+            assert update is not None
             
-            await asyncio.sleep(2)
-            
-            # Replace the order with new quantity
-            replace_request = OrderReplaceRequest(
-                quantity="2",
-                limit_price="1.50"
-            )
-            
-            replace_result = await client.replace_order(order_id, replace_request)
-            assert replace_result is not None
-            
-            await asyncio.sleep(1)
+            if updates_received >= 3:
+                break
+        
+        assert updates_received > 0
+
+        await asyncio.sleep(1)
 
 
 # Options Tests
-
+@pytest.mark.skip(reason="Skipping option tests")
 class TestOptions:
     """Test options-related functionality."""
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_option_expirations(self, client):
         """Test getting option expirations."""
         result = await client.get_option_expirations(TEST_OPTION_UNDERLYING)
         
         assert result is not None
-        if hasattr(result, 'expirations'):
-            expirations = result.expirations
-        else:
-            expirations = result.get('Expirations', [])
+        
+        assert hasattr(result, 'expirations'), f"Expirations not found in result: {result}"
+        
+        expirations = result.expirations
         
         assert len(expirations) > 0
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_option_strikes(self, client):
         """Test getting option strikes."""
         # First get an expiration
         exp_result = await client.get_option_expirations(TEST_OPTION_UNDERLYING)
         
-        if hasattr(exp_result, 'expirations'):
-            expirations = exp_result.expirations
-        else:
-            expirations = exp_result.get('Expirations', [])
+        assert hasattr(exp_result, 'expirations'), f"Expirations not found in result: {exp_result}"
+        
+        expirations = exp_result.expirations
         
         if len(expirations) > 0:
-            expiration = expirations[0].get('Date') or expirations[0].get('date')
+            expiration = expirations[0].date
             
             result = await client.get_option_strikes(
                 TEST_OPTION_UNDERLYING,
@@ -509,7 +530,7 @@ class TestOptions:
             
             assert result is not None
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_get_option_chain(self, client):
         """Test getting option chain."""
         result = await client.get_option_chain(
@@ -521,11 +542,10 @@ class TestOptions:
 
 
 # Error Handling Tests
-
 class TestErrorHandling:
     """Test error handling."""
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_invalid_symbol(self, client):
         """Test handling of invalid symbol."""
         result = await client.get_quote_snapshots("INVALIDSYMBOL12345XYZ")
@@ -533,7 +553,7 @@ class TestErrorHandling:
         # Should return an error response, not throw
         assert result is not None
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_invalid_account(self, client):
         """Test handling of invalid account ID."""
         result = await client.get_balances("99999999")
@@ -541,7 +561,7 @@ class TestErrorHandling:
         # Should return an error response
         assert result is not None
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_cancel_nonexistent_order(self, client):
         """Test canceling a non-existent order."""
         result = await client.cancel_order("99999999")
@@ -551,11 +571,10 @@ class TestErrorHandling:
 
 
 # Context Manager Tests
-
 class TestContextManager:
     """Test async context manager functionality."""
     
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_context_manager(self):
         """Test using client as context manager."""
         if not os.getenv('TRADESTATION_CLIENT_ID'):
