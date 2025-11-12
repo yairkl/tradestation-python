@@ -200,7 +200,7 @@ class Account(SerializableModel):
 
 class Accounts(SerializableModel):
     """Contains brokerage account information for the identified user."""
-    accounts: Optional[List[Account]] = Field(None, alias="Accounts")
+    accounts: List[Account] = Field(None, alias="Accounts")
 
 class ErrorResponse(SerializableModel):
     """Contains error details."""
@@ -316,43 +316,43 @@ class TrailingStop(SerializableModel):
     percent: Optional[str] = Field(None, alias="Percent", description="Percentage offset from current price. Note: Mutually exclusive with Amount.")
 
 class Status(str, Enum):
-    ACK = "ACK"
+    ACK = "ACK" # Recieved
+    BRO = "BRO" # Broken
+    CAN = "CAN" # Canceled
+    FLL = "FLL" # Filled
+    FLP = "FLP" # Partial Fill (UROut)
+    FPR = "FPR" # Partial Fill (Alive)
+    LAT = "LAT" # Too Late to Cancel
+    OPN = "OPN" # Sent
+    OUT = "OUT" # UROut
+    REJ = "REJ" # Rejected
+    UCH = "UCH" # Replaced
+    UCN = "UCN" # Cancel Sent
+    TSC = "TSC" # Trade Server Canceled
+    RJC = "RJC" # Cancel Request Rejected
+    DON = "DON" # Queued
+    RSN = "RSN" # Replace Sent
+    CND = "CND" # Condition Met
+    OSO = "OSO" # OSO Order
+    SUS = "SUS" # Suspended
     ASS = "ASS"
     BRC = "BRC"
     BRF = "BRF"
-    BRO = "BRO"
     CHG = "CHG"
-    CND = "CND"
     COR = "COR"
     DIS = "DIS"
     DOA = "DOA"
-    DON = "DON"
     ECN = "ECN"
     EXE = "EXE"
-    FPR = "FPR"
-    LAT = "LAT"
-    OPN = "OPN"
-    OSO = "OSO"
-    OTHER = "OTHER"
     PLA = "PLA"
     REC = "REC"
-    RJC = "RJC"
     RPD = "RPD"
-    RSN = "RSN"
     STP = "STP"
     STT = "STT"
-    SUS = "SUS"
-    UCN = "UCN"
-    CAN = "CAN"
     EXP = "EXP"
-    OUT = "OUT"
     RJR = "RJR"
     SCN = "SCN"
-    TSC = "TSC"
-    UCH = "UCH"
-    REJ = "REJ"
-    FLL = "FLL"
-    FLP = "FLP"
+    OTHER = "OTHER"
 
 class OrderLeg(SerializableModel):
     """OrderLeg is an object returned from WebAPI."""

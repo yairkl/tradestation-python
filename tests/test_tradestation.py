@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from tradestation import TradeStationClient
-from tradestation.models import OrderRequest, OrderReplaceRequest, Accounts, TradeAction, TimeInForceRequest, Duration, OrderType
+from tradestation.models import OrderRequest, OrderReplaceRequest, Accounts, TradeAction, TimeInForceRequest, Duration, OrderType, ErrorResponse
 
 
 # Test Configuration
@@ -418,7 +418,7 @@ class TestOrders:
             account_id=test_account_id,
             symbol=TEST_SYMBOL,
             quantity="1",
-            order_type="Limit",
+            order_type=OrderType.LIMIT,
             limit_price="1.00",
             trade_action=TradeAction.BUY,
             time_in_force=TimeInForceRequest(duration=Duration.DAY),
@@ -559,7 +559,7 @@ class TestErrorHandling:
         result = await client.get_balances("99999999")
         
         # Should return an error response
-        assert result is not None
+        assert isinstance(result, ErrorResponse)
     
     @pytest.mark.asyncio(loop_scope="session")
     async def test_cancel_nonexistent_order(self, client):
