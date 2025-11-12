@@ -211,14 +211,14 @@ class TradeStationClient:
     
     # Account Methods
     
-    async def get_accounts(self) -> Union[Accounts, ErrorResponse]:
+    async def get_accounts(self) -> Union[List[Account], ErrorResponse]:
         """Get all accounts for the authenticated user."""
         await self._ensure_valid_token()
         url = f"{self.base_url}/v3/brokerage/accounts"
         response = await self.client.get(url)
         
         if response.status_code == 200:
-            return Accounts.from_dict(response.json())
+            return Accounts.from_dict(response.json()).accounts
         else:
             return ErrorResponse.from_dict(response.json())
     
