@@ -27,13 +27,13 @@ from tradestation import TradeStationClient
 async def main():
     async with TradeStationClient(is_demo=True) as client:
         # Get accounts
-        accounts = await client.accounts.get_all()
+        accounts = await client.get_accounts()
         
         # Get quote
-        quote = await client.market_data.get_quotes("AAPL")
+        quote = await client.get_bars("AAPL")
         
         # Stream real-time quotes
-        async for quote_update in client.stream.quotes("AAPL"):
+        async for quote_update in client.stream_bars("AAPL"):
             print(quote_update)
 
 asyncio.run(main())
