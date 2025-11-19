@@ -448,7 +448,7 @@ class TradeStationClient:
         firstdate: Optional[str] = None,
         lastdate: Optional[str] = None,
         sessiontemplate: Optional[str] = None
-    ) -> Union[Bars, ErrorResponse]:
+    ) -> Union[List[Bar], ErrorResponse]:
         """
         Get historical bar data.
         
@@ -481,7 +481,7 @@ class TradeStationClient:
         response = await self.client.get(url, params=params)
         
         if response.status_code == 200:
-            return Bars.from_dict(response.json())
+            return Bars.from_dict(response.json()).bars
         else:
             return ErrorResponse.from_dict(response.json())
     
