@@ -1,4 +1,5 @@
 # TradeStation Python Client
+> Disclamer: this library is unofficial and not maintained by tradestation. use at your own risk
 
 A comprehensive Python library for interacting with the TradeStation API.
 
@@ -14,8 +15,16 @@ A comprehensive Python library for interacting with the TradeStation API.
 
 ## Installation
 
+install from GitHub repository:
 ```bash
-pip install tradestation-python
+pip install git+https://github.com/yairkl/tradestation-python.git
+```
+
+install from source:
+```bash
+git clone https://github.com/yairkl/tradestation-python.git
+cd tradestation-python
+pip install .
 ```
 
 ## Quick Start
@@ -25,7 +34,11 @@ import asyncio
 from tradestation import TradeStationClient
 
 async def main():
-    async with TradeStationClient(is_demo=True) as client:
+    async with TradeStationClient(
+        client_id=<your_client_id>,
+        client_secret=<your_client_secret>,
+        is_demo=True
+    ) as client:
         # Get accounts
         accounts = await client.get_accounts()
         
@@ -42,6 +55,8 @@ asyncio.run(main())
 ## Documentation
 
 Full documentation available at: [Docs](docs/index.md)
+
+Official TradeStation API specification is available at: [Specification](https://api.tradestation.com/docs/specification)
 
 ## Authentication
 
